@@ -1,0 +1,13 @@
+{
+    "gamma": 1.0,
+    "brightness_adjustment": 0,
+    "contrast": 1.1,
+    "intensity_factor": 1.05,
+    "red": 0,
+    "green": 5,
+    "blue": 0,
+    "saturation_factor": 1.0,
+    "apply_fog_removal": True,
+    "apply_blur": False,
+    "shadow_adjustment": 1.1
+}

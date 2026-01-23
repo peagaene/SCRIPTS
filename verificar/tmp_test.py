@@ -1,0 +1,3 @@
+TABLE_COLUMNS = [
+    "Azimute (° \' ")"
+]
