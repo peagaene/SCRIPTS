@@ -339,6 +339,36 @@ class InventoryThread(threading.Thread):
 
             df = pd.DataFrame(resultados)
             df_crit = df[df['Alerta'].str.contains("Pasta crítica", case=False, na=False)].copy()
+            # Somente entradas com tamanho >= 1GB na planilha final
+            size_threshold = 1024 * 1024 * 1024
+            df = df[df["Tamanho_bytes"].fillna(0) >= size_threshold].copy()
+            df_crit = df_crit[df_crit["Tamanho_bytes"].fillna(0) >= size_threshold].copy()
+
+            # Comparacao de nomes de arquivos .las/.laz entre pastas
+            las_folders = sorted(pastas_com_las)
+            comparison_rows = []
+            if len(las_folders) >= 2:
+                folder_files = {}
+                for folder in las_folders:
+                    names = set()
+                    for root, _, files in os.walk(folder):
+                        for f in files:
+                            lower = f.lower()
+                            if lower.endswith(".las") or lower.endswith(".laz"):
+                                names.add(os.path.splitext(lower)[0])
+                    folder_files[folder] = names
+                for i in range(len(las_folders)):
+                    for j in range(i + 1, len(las_folders)):
+                        a = las_folders[i]
+                        b = las_folders[j]
+                        inter = folder_files[a].intersection(folder_files[b])
+                        if inter:
+                            comparison_rows.append({
+                                "Pasta_A": a,
+                                "Pasta_B": b,
+                                "Arquivos_iguais": len(inter)
+                            })
+            df_comp = pd.DataFrame(comparison_rows)
 
             try:
                 base_folder = os.path.basename(os.path.normpath(self.folders[0]))
@@ -357,6 +387,7 @@ class InventoryThread(threading.Thread):
             with pd.ExcelWriter(caminho_saida, engine="xlsxwriter") as xw:
                 df_crit.to_excel(xw, index=False, sheet_name="Pastas_criticas")
                 df.to_excel(xw, index=False, sheet_name="Todas_as_pastas")
+                df_comp.to_excel(xw, index=False, sheet_name="Comparacao_nomes")
 
             with open("pastas_com_las.json", "w", encoding="utf-8") as f:
                 json.dump(sorted(pastas_com_las), f, indent=2, ensure_ascii=False)

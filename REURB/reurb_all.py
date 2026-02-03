@@ -44,8 +44,6 @@ LAYER_CURVA_INTER   = "HM_CURVA_NIV_INTERMEDIARIA"
 LAYER_CURVA_MESTRA  = "HM_CURVA_NIV_MESTRA"
 LAYER_CURVA_ROTULO  = "TOP_CURVA_NIV"
 
-# Curvas de nível REURB
-
 # Vértices/Tabela/Ordinate
 LAYER_VERTICE_PTO   = "HM_VERTICES_PTO"
 LAYER_VERTICE_TXT   = "TOP_VERTICE"
@@ -134,7 +132,7 @@ class Params:
     max_dist_lote: float    = 5.0
 
     # Perímetro & anotações
-    altura_texto_P: float       = 0.75
+    altura_texto_P: float       = 1.5
     p_label_offset_m: float   = 1.8
     p_label_offset_step: float = 0.5
     altura_texto_tabela: float  = 2.0
@@ -148,7 +146,7 @@ class Params:
     # Curvas de nível
     curva_equidist: float        = 1.0     # m
     curva_mestra_cada: int       = 5       # mestra a cada N m
-    altura_texto_curva: float    = 0.4     # altura do rótulo
+    altura_texto_curva: float    = 0.75     # altura do rótulo
     curva_char_w_factor: float   = 0.60    # largura ~ h * fator * n_chars
     curva_gap_margin: float      = 0.50    # margem auxiliar (compatibilidade)
     curva_label_step_m: float    = 80.0    # distância entre rótulos na mestra (m)
