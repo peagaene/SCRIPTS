@@ -3,6 +3,22 @@ import re
 from typing import Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox
+try:
+    from osgeo import gdal, osr
+    _HAS_GDAL = True
+except Exception:
+    gdal = None
+    osr = None
+    _HAS_GDAL = False
+
+try:
+    import rasterio
+    from rasterio.crs import CRS
+    _HAS_RASTERIO = True
+except Exception:
+    rasterio = None
+    CRS = None
+    _HAS_RASTERIO = False
 
 
 def selecionar_pasta():
@@ -41,6 +57,57 @@ def aplicar_bloco(base: str, bloco: str) -> str:
     return "_".join(partes)
 
 
+def ensure_tif_epsg(tif_path: str, default_epsg: int = 31982) -> Optional[int]:
+    """
+    Garante que um GeoTIFF tenha EPSG definido.
+    Se nao for possivel identificar o EPSG, define o default (ex.: 31982).
+    Retorna o EPSG identificado/definido ou None em caso de falha silenciosa.
+    """
+    if not tif_path or not os.path.isfile(tif_path):
+        return None
+
+    if _HAS_GDAL:
+        ds = gdal.Open(tif_path, gdal.GA_Update)
+        if ds is None:
+            raise RuntimeError("GDAL nao conseguiu abrir o arquivo.")
+
+        proj = ds.GetProjection()
+        epsg = None
+        if proj:
+            srs = osr.SpatialReference()
+            if srs.ImportFromWkt(proj) == 0:
+                try:
+                    srs.AutoIdentifyEPSG()
+                except Exception:
+                    pass
+                epsg = srs.GetAuthorityCode(None)
+                if epsg:
+                    try:
+                        epsg = int(epsg)
+                    except Exception:
+                        epsg = None
+
+        if not epsg:
+            srs = osr.SpatialReference()
+            srs.ImportFromEPSG(int(default_epsg))
+            ds.SetProjection(srs.ExportToWkt())
+            ds.FlushCache()
+            epsg = int(default_epsg)
+
+        ds = None
+        return epsg
+
+    if _HAS_RASTERIO:
+        with rasterio.open(tif_path, "r+") as ds:
+            epsg = ds.crs.to_epsg() if ds.crs else None
+            if not epsg:
+                ds.crs = CRS.from_epsg(int(default_epsg))
+                epsg = int(default_epsg)
+        return epsg
+
+    raise RuntimeError("GDAL/rasterio nao disponivel para consultar/definir EPSG.")
+
+
 def renomear(pasta: str, novo_trecho: str, bloco_forcado: Optional[str] = None) -> int:
     """
     Renomeia arquivos LAS da pasta aplicando o trecho escolhido (NP/NPc_T/NPc_C)
@@ -58,10 +125,17 @@ def renomear(pasta: str, novo_trecho: str, bloco_forcado: Optional[str] = None) 
             continue
 
         base, ext = os.path.splitext(nome)
+        ext_lower = ext.lower()
 
         base = aplicar_regra(base, novo_trecho)
         if not base:
             continue
+
+        if ext_lower in (".tif", ".tiff"):
+            try:
+                ensure_tif_epsg(caminho_antigo, 31982)
+            except Exception as e:
+                raise RuntimeError(f"Falha ao ajustar EPSG do TIF '{nome}': {e}")
 
         if bloco_forcado:
             base = aplicar_bloco(base, bloco_forcado)

@@ -297,8 +297,9 @@ class InventoryThread(threading.Thread):
     def run(self):
         palavras_chave = ["stripalign","lms","temp","out_area","out area",
                           "trj","mms_panoramica","mms panoramica","develop"]
-        extensao_las = ".las"
+        extensoes_las = (".las", ".laz")
         resultados, pastas_com_las = [], set()
+        folder_meta = {}
 
         try:
             for storage in self.folders:
@@ -310,18 +311,20 @@ class InventoryThread(threading.Thread):
                     nome_pasta = partes[-1].strip()
                     nome_lower = nome_pasta.lower()
                     alerta = []
-                    if any(p in nome_lower for p in palavras_chave):
-                        alerta.append("Pasta crítica")
+                    for p in palavras_chave:
+                        if p in nome_lower:
+                            alerta.append(f"palavra-chave: {p}")
+                            break
                     rt_size = None
                     if nome_lower == "rt":
                         rt_size = safe_folder_size_bytes(raiz)
                         if rt_size >= 100 * 1024 * 1024:
-                            alerta.append("Pasta crítica")
-                    if any(f.lower().endswith(extensao_las) for f in arquivos):
-                        alerta.append("Contém LAS")
+                            alerta.append("pasta rt >= 100MB")
+                    if any(f.lower().endswith(extensoes_las) for f in arquivos):
+                        alerta.append("contém LAS/LAZ")
                         pastas_com_las.add(os.path.normpath(raiz))
                     tamanho_bytes = tamanho_legivel = None
-                    if "Pasta crítica" in alerta:
+                    if alerta:
                         tamanho_bytes = rt_size if rt_size is not None else safe_folder_size_bytes(raiz)
                         tamanho_legivel = format_size(tamanho_bytes)
                         # Ignora pastas críticas vazias ou muito pequenas (<1MB)
@@ -331,43 +334,58 @@ class InventoryThread(threading.Thread):
                         "Storage": storage,
                         "Projeto": projeto,
                         "Subpasta": raiz,
-                        "Nível": len(partes),
                         "Alerta": ", ".join(sorted(set(alerta))) if alerta else "",
                         "Tamanho_bytes": tamanho_bytes,
                         "Tamanho_legível": tamanho_legivel or ""
                     })
+                    if alerta or any(f.lower().endswith(extensoes_las) for f in arquivos):
+                        folder_meta[os.path.normpath(raiz)] = (storage, projeto)
 
             df = pd.DataFrame(resultados)
-            df_crit = df[df['Alerta'].str.contains("Pasta crítica", case=False, na=False)].copy()
+            df_crit = df[df['Alerta'].str.strip().astype(bool)].copy()
             # Somente entradas com tamanho >= 1GB na planilha final
             size_threshold = 1024 * 1024 * 1024
             df = df[df["Tamanho_bytes"].fillna(0) >= size_threshold].copy()
             df_crit = df_crit[df_crit["Tamanho_bytes"].fillna(0) >= size_threshold].copy()
+            for _df in (df, df_crit):
+                if "Tamanho_bytes" in _df.columns:
+                    _df.drop(columns=["Tamanho_bytes"], inplace=True)
 
             # Comparacao de nomes de arquivos .las/.laz entre pastas
             las_folders = sorted(pastas_com_las)
             comparison_rows = []
             if len(las_folders) >= 2:
-                folder_files = {}
+                groups = {}
                 for folder in las_folders:
-                    names = set()
-                    for root, _, files in os.walk(folder):
-                        for f in files:
-                            lower = f.lower()
-                            if lower.endswith(".las") or lower.endswith(".laz"):
-                                names.add(os.path.splitext(lower)[0])
-                    folder_files[folder] = names
-                for i in range(len(las_folders)):
-                    for j in range(i + 1, len(las_folders)):
-                        a = las_folders[i]
-                        b = las_folders[j]
-                        inter = folder_files[a].intersection(folder_files[b])
-                        if inter:
-                            comparison_rows.append({
-                                "Pasta_A": a,
-                                "Pasta_B": b,
-                                "Arquivos_iguais": len(inter)
-                            })
+                    meta = folder_meta.get(folder)
+                    if not meta:
+                        continue
+                    groups.setdefault(meta, []).append(folder)
+                for (storage, projeto), folders in groups.items():
+                    if len(folders) < 2:
+                        continue
+                    folder_files = {}
+                    for folder in folders:
+                        names = set()
+                        for root, _, files in os.walk(folder):
+                            for f in files:
+                                lower = f.lower()
+                                if lower.endswith(".las") or lower.endswith(".laz"):
+                                    names.add(os.path.splitext(lower)[0])
+                        folder_files[folder] = names
+                    for i in range(len(folders)):
+                        for j in range(i + 1, len(folders)):
+                            a = folders[i]
+                            b = folders[j]
+                            inter = folder_files[a].intersection(folder_files[b])
+                            if inter:
+                                comparison_rows.append({
+                                    "Storage": storage,
+                                    "Projeto": projeto,
+                                    "Pasta_A": a,
+                                    "Pasta_B": b,
+                                    "Arquivos_iguais": len(inter)
+                                })
             df_comp = pd.DataFrame(comparison_rows)
 
             try:
@@ -378,9 +396,9 @@ class InventoryThread(threading.Thread):
                     base_folder = datetime.now().strftime("inv_%Y%m%d_%H%M%S")
                 if not base_folder.lower().startswith("inv_"):
                     base_folder = f"inv_{base_folder}"
-                nome_planilha = f"{base_folder}.xlsx"
+                nome_planilha = f"{base_folder}Planilha.xlsx"
             except Exception:
-                nome_planilha = f"inv_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                nome_planilha = f"inv_{datetime.now().strftime('%Y%m%d_%H%M%S')}Planilha.xlsx"
 
             caminho_saida = os.path.join(INVENTARIO_DIR, nome_planilha)
             os.makedirs(os.path.dirname(caminho_saida), exist_ok=True)
