@@ -14,6 +14,8 @@ import argparse
 import os
 import re
 import shutil
+import time
+import datetime
 from pathlib import Path
 from typing import Optional, Tuple, Iterable
 
@@ -34,12 +36,10 @@ except Exception:
     CRS = None
     _HAS_RASTERIO = False
 
-try:
-    from metadados import build_metadata_text
+_HAS_METADATA = False
+if _HAS_GDAL:
+    gdal.UseExceptions()
     _HAS_METADATA = True
-except Exception:
-    build_metadata_text = None
-    _HAS_METADATA = False
 
 try:
     import PySimpleGUI as sg
@@ -56,6 +56,369 @@ IGNORED_DIRS = {
     "FOUND.000",
     "Config.Msi",
 }
+
+
+def dec_to_dms_str(value: float, is_lon: bool = True) -> str:
+    hemi = "E" if is_lon and value >= 0 else "W" if is_lon else "N" if value >= 0 else "S"
+    v = abs(value)
+    d = int(v)
+    m_float = (v - d) * 60.0
+    m = int(m_float)
+    s = (m_float - m) * 60.0
+    return f'{d}° {m:02d}\' {s:07.4f}" {hemi}'
+
+
+def guess_sample_type(gdal_dtype) -> str:
+    if gdal_dtype == gdal.GDT_Byte:
+        return "Unsigned 8-bit Integer"
+    if gdal_dtype == gdal.GDT_UInt16:
+        return "Unsigned 16-bit Integer"
+    if gdal_dtype == gdal.GDT_Int16:
+        return "Signed 16-bit Integer"
+    if gdal_dtype == gdal.GDT_UInt32:
+        return "Unsigned 32-bit Integer"
+    if gdal_dtype == gdal.GDT_Int32:
+        return "Signed 32-bit Integer"
+    if gdal_dtype in (gdal.GDT_Float32, gdal.GDT_Float64):
+        return "Floating Point"
+    return "Unknown Format (0)"
+
+
+def get_proj_desc_safe(srs) -> str:
+    try:
+        zone = srs.GetUTMZone()
+    except Exception:
+        zone = 0
+    try:
+        units_name = srs.GetLinearUnitsName() or "meters"
+    except Exception:
+        units_name = "meters"
+    try:
+        datum = (srs.GetAttrValue("DATUM") or "").replace("_", " ").strip()
+    except Exception:
+        datum = "Unknown"
+    if zone != 0:
+        return f"UTM Zone {zone if zone < 0 else '-' + str(zone)} / {datum.split()[0] or datum} / {units_name}"
+    try:
+        projcs = srs.GetAttrValue("PROJCS") or "Unknown"
+    except Exception:
+        projcs = "Unknown"
+    return f"{projcs} / {units_name}"
+
+
+def detect_photometric(info_json: dict, band_count: int) -> str:
+    md_image = info_json.get("metadata", {}).get("IMAGE_STRUCTURE", {})
+    photometric = md_image.get("PHOTOMETRIC")
+    if photometric:
+        up = photometric.upper()
+        if "RGB" in up:
+            return "RGB Full-Color"
+        if "PALETTE" in up:
+            return "Palette Color"
+        if "MINISBLACK" in up or "MINISWHITE" in up:
+            return "Grayscale"
+        return photometric
+    if band_count == 3:
+        return "RGB Full-Color"
+    if band_count == 1:
+        return "Grayscale"
+    return "Unknown"
+
+
+def flatten_metadata(md: dict, prefix: str = "META") -> list[str]:
+    lines: list[str] = []
+
+    def _walk(obj, path):
+        if isinstance(obj, dict):
+            for k, v in sorted(obj.items()):
+                _walk(v, path + [str(k)])
+        elif isinstance(obj, list):
+            for idx, v in enumerate(obj, start=1):
+                _walk(v, path + [str(idx)])
+        else:
+            key = "_".join(path)
+            lines.append(f"{prefix}_{key}={obj}")
+
+    _walk(md, [])
+    return lines
+
+
+def build_metadata_text(tif_path: str) -> str:
+    start_time = time.time()
+    ds = gdal.Open(tif_path, gdal.GA_ReadOnly)
+    if ds is None:
+        raise RuntimeError("GDAL retornou None ao abrir o arquivo.")
+    load_time = time.time() - start_time
+
+    try:
+        info_json = gdal.Info(tif_path, options=gdal.InfoOptions(format="json")) or {}
+    except Exception:
+        info_json = {}
+
+    driver_short = ds.GetDriver().ShortName if ds.GetDriver() else "Unknown"
+    driver_long = ds.GetDriver().LongName if ds.GetDriver() else "Unknown"
+
+    cols = ds.RasterXSize
+    rows = ds.RasterYSize
+    bands = ds.RasterCount
+    gt = ds.GetGeoTransform()
+
+    origin_x = gt[0]
+    pixel_w = gt[1]
+    origin_y = gt[3]
+    pixel_h = gt[5]
+
+    ulx = origin_x
+    uly = origin_y
+    lrx = origin_x + cols * pixel_w
+    lry = origin_y + rows * pixel_h
+    if lry > uly:
+        uly, lry = lry, uly
+
+    area_m2 = abs(pixel_w * pixel_h * cols * rows)
+    area_km2 = area_m2 / 1e6
+
+    proj_desc = "Unknown"
+    proj_datum = "Unknown"
+    proj_units = "Unknown"
+    epsg_str = "EPSG:Unknown"
+    pcs_citation = "Unknown"
+    geog_citation = "Unknown"
+    srs = None
+
+    proj_wkt = ds.GetProjection()
+    if proj_wkt and proj_wkt.strip():
+        try:
+            srs = osr.SpatialReference()
+            srs.ImportFromWkt(proj_wkt)
+            proj_desc = get_proj_desc_safe(srs)
+            try:
+                proj_datum = (srs.GetAttrValue("DATUM") or "Unknown").replace("_", " ")
+            except Exception:
+                proj_datum = "Unknown"
+            try:
+                proj_units = srs.GetLinearUnitsName() or "Unknown"
+            except Exception:
+                proj_units = "Unknown"
+            try:
+                srs_clone = srs.Clone()
+                srs_clone.AutoIdentifyEPSG()
+                epsg = srs_clone.GetAuthorityCode("PROJCS") or srs_clone.GetAuthorityCode(None)
+                if epsg:
+                    epsg_str = f"EPSG:{epsg}"
+            except Exception:
+                pass
+            pcs_name = srs.GetAttrValue("PROJCS") or ""
+            if pcs_name:
+                pcs_citation = pcs_name
+            try:
+                srs_geo = srs.CloneGeogCS()
+                geog_name = srs_geo.GetAttrValue("GEOGCS") or srs_geo.GetAttrValue("DATUM") or ""
+                if geog_name:
+                    geog_citation = geog_name.replace("_", " ")
+            except Exception:
+                pass
+        except Exception:
+            srs = None
+
+    west_lon = east_lon = north_lat = south_lat = 0.0
+    ul_lon = ul_lat = ur_lon = ur_lat = lr_lon = lr_lat = ll_lon = ll_lat = 0.0
+
+    if srs is not None:
+        try:
+            srs_geo = srs.CloneGeogCS()
+            ct = osr.CoordinateTransformation(srs, srs_geo)
+
+            def proj_to_geo(x, y):
+                lon, lat, _ = ct.TransformPoint(x, y)
+                return lon, lat
+
+            urx = lrx
+            ury = uly
+            llx = ulx
+            lly = lry
+
+            ul_lon, ul_lat = proj_to_geo(ulx, uly)
+            ur_lon, ur_lat = proj_to_geo(urx, ury)
+            lr_lon, lr_lat = proj_to_geo(lrx, lry)
+            ll_lon, ll_lat = proj_to_geo(llx, lly)
+
+            all_lons = [ul_lon, ur_lon, lr_lon, ll_lon]
+            all_lats = [ul_lat, ur_lat, lr_lat, ll_lat]
+            west_lon = min(all_lons)
+            east_lon = max(all_lons)
+            north_lat = max(all_lats)
+            south_lat = min(all_lats)
+        except Exception:
+            pass
+
+    band1 = ds.GetRasterBand(1)
+    gdal_dtype = band1.DataType
+    bits_per_sample = gdal.GetDataTypeSize(gdal_dtype)
+    bit_depth_total = bits_per_sample * bands
+    sample_type = guess_sample_type(gdal_dtype)
+
+    if gdal_dtype in (gdal.GDT_Byte, gdal.GDT_UInt16, gdal.GDT_UInt32):
+        sample_format = "Unsigned Integer"
+    elif gdal_dtype in (gdal.GDT_Int16, gdal.GDT_Int32):
+        sample_format = "Signed Integer"
+    elif gdal_dtype in (gdal.GDT_Float32, gdal.GDT_Float64):
+        sample_format = "Floating Point"
+    else:
+        sample_format = "Unknown"
+
+    md_all = info_json.get("metadata", {})
+    md_tiff = md_all.get("TIFF", {})
+    md_geotiff_block = md_all.get("GeoTIFF", {})
+    md_geotiff_flat = {k: v for k, v in md_all.items() if k.startswith("GeoTIFF::")}
+    md_geotiff = {}
+    md_geotiff.update(md_geotiff_block)
+    md_geotiff.update(md_geotiff_flat)
+
+    rows_per_strip = md_tiff.get("ROWS_PER_STRIP")
+    if not rows_per_strip:
+        bx, by = band1.GetBlockSize()
+        rows_per_strip = by if by > 0 else "Unknown"
+
+    compression = md_tiff.get("COMPRESSION")
+    if not compression:
+        md_img_struct = info_json.get("metadata", {}).get("IMAGE_STRUCTURE", {})
+        compression = md_img_struct.get("COMPRESSION", "None")
+    if not compression:
+        compression = "Unknown"
+
+    pixel_scale_str = f"( {abs(pixel_w)}, {abs(pixel_h)}, 1.0 )"
+    tiepoints_str = f"( 0.00, 0.00, 0.00 ) --> ( {ulx}, {uly}, 0.000 )"
+
+    model_type = md_geotiff.get("GeoTIFF::ModelTypeGeoKey", "Projection Coordinate System")
+    raster_type = md_geotiff.get("GeoTIFF::RasterTypeGeoKey", "Pixel is Area")
+
+    photometric = detect_photometric(info_json, bands)
+
+    overview_lines = []
+    band_json_list = info_json.get("bands", [])
+    if band_json_list:
+        ovs = band_json_list[0].get("overviews", [])
+        for idx, ov in enumerate(ovs, start=1):
+            size = ov.get("size", [])
+            if len(size) == 2:
+                o_cols, o_rows = size
+                overview_lines.append(f"OVERVIEW {idx}=Pixel Size: {o_cols} x {o_rows}")
+
+    geokey_lines = []
+    for key in [
+        "GeoTIFF::ProjLinearUnitsGeoKey",
+        "GeoTIFF::ProjectedCSTypeGeoKey",
+        "GeoTIFF::GeographicTypeGeoKey",
+        "GeoTIFF::GeogSemiMajorAxisGeoKey",
+        "GeoTIFF::GeogSemiMinorAxisGeoKey",
+        "GeoTIFF::GeogEllipsoidGeoKey",
+        "GeoTIFF::GeogToWGS84GeoKey",
+    ]:
+        if key in md_geotiff:
+            geokey_lines.append(f"{key}={md_geotiff[key]}")
+
+    try:
+        ctime = datetime.datetime.fromtimestamp(os.path.getctime(tif_path))
+        ctime_str = ctime.strftime("%d/%m/%Y %H:%M:%S")
+    except Exception:
+        ctime_str = "Unknown"
+
+    try:
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(tif_path))
+        mtime_str = mtime.strftime("%d/%m/%Y %H:%M:%S")
+    except Exception:
+        mtime_str = "Unknown"
+
+    color_bands = ",".join(str(i) for i in range(bands))
+    load_time_str = f"{load_time:.2f} s"
+
+    lines = []
+    lines.append(f"FILENAME={os.path.abspath(tif_path)}")
+    lines.append(f"DESCRIPTION={os.path.basename(tif_path)}")
+    lines.append(f"DRIVER={driver_short} ({driver_long})")
+    lines.append(f"UPPER LEFT X={ulx}")
+    lines.append(f"UPPER LEFT Y={uly}")
+    lines.append(f"LOWER RIGHT X={lrx}")
+    lines.append(f"LOWER RIGHT Y={lry}")
+    lines.append(f"WEST LONGITUDE={dec_to_dms_str(west_lon, is_lon=True)}")
+    lines.append(f"NORTH LATITUDE={dec_to_dms_str(north_lat, is_lon=False)}")
+    lines.append(f"EAST LONGITUDE={dec_to_dms_str(east_lon, is_lon=True)}")
+    lines.append(f"SOUTH LATITUDE={dec_to_dms_str(south_lat, is_lon=False)}")
+    lines.append(f"UL CORNER LONGITUDE={dec_to_dms_str(ul_lon, is_lon=True)}")
+    lines.append(f"UL CORNER LATITUDE={dec_to_dms_str(ul_lat, is_lon=False)}")
+    lines.append(f"UR CORNER LONGITUDE={dec_to_dms_str(ur_lon, is_lon=True)}")
+    lines.append(f"UR CORNER LATITUDE={dec_to_dms_str(ur_lat, is_lon=False)}")
+    lines.append(f"LR CORNER LONGITUDE={dec_to_dms_str(lr_lon, is_lon=True)}")
+    lines.append(f"LR CORNER LATITUDE={dec_to_dms_str(lr_lat, is_lon=False)}")
+    lines.append(f"LL CORNER LONGITUDE={dec_to_dms_str(ll_lon, is_lon=True)}")
+    lines.append(f"LL CORNER LATITUDE={dec_to_dms_str(ll_lat, is_lon=False)}")
+    lines.append(f"PROJ_DESC={proj_desc}")
+    lines.append(f"PROJ_DATUM={proj_datum}")
+    lines.append(f"PROJ_UNITS={proj_units}")
+    lines.append(f"EPSG_CODE={epsg_str}")
+    lines.append(f"BBOX AREA={area_km2:.3f} sq km")
+    lines.append(f"FILE_CREATION_TIME={ctime_str}")
+    lines.append(f"FILE_MODIFIED_TIME={mtime_str}")
+    lines.append(f"NUM COLUMNS={cols}")
+    lines.append(f"NUM ROWS={rows}")
+    lines.append(f"NUM BANDS={bands}")
+    lines.append(f"COLOR BANDS={color_bands}")
+    lines.append(f"PIXEL WIDTH={abs(pixel_w)} meters")
+    lines.append(f"PIXEL HEIGHT={abs(pixel_h)} meters")
+    lines.append(f"BIT DEPTH={bit_depth_total}")
+    lines.append(f"SAMPLE TYPE={sample_type}")
+    lines.append(f"GT_CITATION={pcs_citation}")
+    lines.append(f"GEOG_CITATION={geog_citation}")
+    lines.append(f"PHOTOMETRIC={photometric}")
+    lines.append(f"SAMPLE_FORMAT={sample_format}")
+    lines.append(f"ROWS_PER_STRIP={rows_per_strip}")
+    lines.append(f"COMPRESSION={compression}")
+    lines.append(f"PIXEL_SCALE={pixel_scale_str}")
+    lines.append(f"TIEPOINTS={tiepoints_str}")
+    lines.append(f"MODEL_TYPE={model_type if isinstance(model_type, str) else 'Projection Coordinate System'}")
+    lines.append(f"RASTER_TYPE={raster_type if isinstance(raster_type, str) else 'Pixel is Area'}")
+
+    for idx, bjson in enumerate(band_json_list, start=1):
+        nodata_val = bjson.get("noDataValue")
+        color_interp = bjson.get("colorInterpretation") or "Unknown"
+        offset = bjson.get("offset")
+        scale = bjson.get("scale")
+        unit = bjson.get("unit")
+        block = bjson.get("block", [])
+        minimum = bjson.get("minimum")
+        maximum = bjson.get("maximum")
+        mean = bjson.get("mean")
+        stddev = bjson.get("stdDev")
+
+        lines.append(f"BAND{idx}_COLOR_INTERP={color_interp}")
+        lines.append(f"BAND{idx}_NODATA={nodata_val if nodata_val is not None else 'None'}")
+        lines.append(f"BAND{idx}_OFFSET={offset if offset is not None else 0}")
+        lines.append(f"BAND{idx}_SCALE={scale if scale is not None else 1}")
+        if unit:
+            lines.append(f"BAND{idx}_UNIT={unit}")
+        if block:
+            lines.append(f"BAND{idx}_BLOCKSIZE={'x'.join(str(v) for v in block)}")
+        if minimum is not None:
+            lines.append(f"BAND{idx}_MIN={minimum}")
+        if maximum is not None:
+            lines.append(f"BAND{idx}_MAX={maximum}")
+        if mean is not None:
+            lines.append(f"BAND{idx}_MEAN={mean}")
+        if stddev is not None:
+            lines.append(f"BAND{idx}_STDDEV={stddev}")
+
+        band_md = bjson.get("metadata", {})
+        if band_md:
+            lines.extend(flatten_metadata(band_md, prefix=f"BAND{idx}_META"))
+
+    lines.extend(overview_lines)
+    lines.extend(geokey_lines)
+
+    if md_all:
+        lines.extend(flatten_metadata(md_all, prefix="DATASET_META"))
+
+    return "\n".join(lines)
 
 
 def remover_revisoes(base: str) -> str:
@@ -134,7 +497,7 @@ def normalize_code(token: str) -> str:
 
 def categorize_suffix(raw_suffix: str) -> Optional[str]:
     s = raw_suffix.strip("_").lower()
-    if s in {"hc", "int"}:
+    if s in {"hc", "int", "xyz"}:
         return s
     return None
 
@@ -164,12 +527,51 @@ def parse_imagem_name(filename: str) -> Tuple[Optional[str], Optional[str]]:
 def find_lote_bloco(parts: list[str]) -> Tuple[Optional[str], Optional[str]]:
     lote = None
     bloco = None
-    for p in parts:
+    for idx, p in enumerate(parts):
         up = p.upper()
         if up.startswith("LOTE_"):
             lote = p
+        elif up == "LOTE" and idx + 1 < len(parts):
+            lote = f"LOTE_{parts[idx + 1]}"
         elif up.startswith("BLOCO_"):
             bloco = p
+        elif up == "BLOCO" and idx + 1 < len(parts):
+            bloco = f"BLOCO_{parts[idx + 1]}"
+    return lote, bloco
+
+
+def find_lote_bloco_in_name(stem: str) -> Tuple[Optional[str], Optional[str]]:
+    # Aceita variantes como LOTE_09, LOTE-09, LOTE09 e BLOCO_B, BLOCO-B, BLOCOB
+    lote = None
+    bloco = None
+    tokens = re.split(r"[_-]+", stem)
+    for t in tokens:
+        up = t.upper()
+        if not lote and re.fullmatch(r"L\d{1,2}", up):
+            lote = f"LOTE_{up[1:].zfill(2)}"
+        if not bloco and up == "B":
+            bloco = "BLOCO_B"
+        if not bloco and re.fullmatch(r"B[A-Z]", up):
+            bloco = f"BLOCO_{up[1:]}"
+    m = re.search(r"\bLOTE[_-]?([A-Za-z0-9]+)\b", stem, flags=re.IGNORECASE)
+    if m:
+        lote = f"LOTE_{m.group(1)}"
+    m = re.search(r"\bBLOCO[_-]?([A-Za-z0-9]+)\b", stem, flags=re.IGNORECASE)
+    if m:
+        bloco = f"BLOCO_{m.group(1)}"
+    # Padrao alternativo: ES_L09_B_... (Lote e Bloco abreviados)
+    if not lote:
+        m = re.search(r"(?:^|[_-])L(\d{1,2})(?:[_-]|$)", stem, flags=re.IGNORECASE)
+        if m:
+            lote = f"LOTE_{m.group(1).zfill(2)}"
+    if not bloco:
+        m = re.search(r"(?:^|[_-])B([A-Za-z])(?:[_-]|$)", stem, flags=re.IGNORECASE)
+        if m:
+            bloco = f"BLOCO_{m.group(1).upper()}"
+        else:
+            m = re.search(r"(?:^|[_-])B(?:[_-]|$)", stem, flags=re.IGNORECASE)
+            if m:
+                bloco = "BLOCO_B"
     return lote, bloco
 
 
@@ -227,6 +629,7 @@ def process_np_mds_mdt(base_dir: Path, log, dry_run: bool) -> None:
 
 def process_hc_int(base_dir: Path, log, dry_run: bool) -> None:
     roots = [
+        base_dir,
         base_dir / "8_IMG_HIPSOMETRICA_COMPOSTA",
         base_dir / "9_IMG_INTENSIDADE",
     ]
@@ -237,12 +640,31 @@ def process_hc_int(base_dir: Path, log, dry_run: bool) -> None:
         for p in iter_files_safely(root):
             if not p.is_file():
                 continue
+            # Evita reprocessar arquivos que ja estao nas pastas finais
+            if root == base_dir:
+                parts_upper = {part.upper() for part in p.parts}
+                if "8_IMG_HIPSOMETRICA_COMPOSTA" in parts_upper or "9_IMG_INTENSIDADE" in parts_upper:
+                    continue
             new_base, category = parse_imagem_name(p.name)
             if not new_base or not category:
                 continue
             ext = p.suffix.lower()
             lote, bloco = find_lote_bloco(list(p.parts))
             if not lote or not bloco:
+                # Tenta extrair lote/bloco do nome do arquivo
+                name_parts = p.stem.split("_")
+                lote2, bloco2 = find_lote_bloco(name_parts)
+                lote = lote or lote2
+                bloco = bloco or bloco2
+            if not lote or not bloco:
+                lote3, bloco3 = find_lote_bloco_in_name(p.stem)
+                lote = lote or lote3
+                bloco = bloco or bloco3
+            if not lote or not bloco:
+                log(f"[HC/INT] Sem LOTE/BLOCO para {p}")
+                log(f"[HC/INT] parts={list(p.parts)}")
+                log(f"[HC/INT] stem={p.stem}")
+                log(f"[HC/INT] lote={lote} bloco={bloco}")
                 # sem lote/bloco, renomeia no lugar
                 dest = p.with_name(f"{new_base}{ext}")
                 if dest != p:
