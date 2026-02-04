@@ -1,3 +1,0 @@
-TABLE_COLUMNS = [
-    "Azimute (° \' ")"
-]
