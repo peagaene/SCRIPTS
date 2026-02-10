@@ -1,0 +1,44 @@
+﻿seed: 42
+num_classes: 3
+voxel_size: 0.5
+max_intensity: 65535.0
+use_hag: true
+hag_cell_size: 1.0
+use_return_features: true
+use_scan_angle: true
+use_normal_features: true
+use_roughness_feature: true
+normal_cell_size: 1.0
+normal_min_points: 6
+roughness_scale: 1.0
+crop_size: 96.0
+max_points_per_crop: 250000
+num_workers: 4
+batch_size: 1
+epochs: 20
+lr: 0.001
+weight_decay: 0.01
+scheduler: cosine
+amp: true
+split:
+  auto_generate: true
+  recursive: true
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  seed: 42
+  regenerate: true
+model:
+  in_channels: 2
+  base_channels: 32
+  depth: 4
+paths:
+  data_root: E:/training/data_root/1
+  train_split: E:/training/train_split/train.txt
+  val_split: E:/training/val_split/val.txt
+  test_split: E:/training/test_split/test.txt
+  las_to_train: ./configs/las_to_train.json
+  classes: ./configs/classes.json
+  ignore_las_classes: ./configs/ignore_las_classes.json
+  checkpoints_dir: E:/training/checkpoints/main
+  logs_dir: E:/training/checkpoints/main/logs

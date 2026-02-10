@@ -1,0 +1,3 @@
+﻿# caminhos LAS/LAZ para treino (relativos a data_root ou absolutos)
+area_001.laz
+area_002.laz

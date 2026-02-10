@@ -1,0 +1,8 @@
+﻿torch>=2.2
+numpy>=1.24
+laspy>=2.5
+tqdm>=4.66
+tensorboard>=2.15
+PyYAML>=6.0
+lazrs>=0.6
+spconv-cu121>=2.3.8
