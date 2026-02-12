@@ -1,38 +1,49 @@
 from osgeo import gdal, osr
+import numpy as np
 
-def save_image_with_epsg(image, output_path, epsg=31983, geotransform=None, projection=None):
+
+def _gdal_dtype_from_numpy(dtype):
+    if np.issubdtype(dtype, np.uint8):
+        return gdal.GDT_Byte
+    if np.issubdtype(dtype, np.uint16):
+        return gdal.GDT_UInt16
+    if np.issubdtype(dtype, np.int16):
+        return gdal.GDT_Int16
+    if np.issubdtype(dtype, np.uint32):
+        return gdal.GDT_UInt32
+    if np.issubdtype(dtype, np.int32):
+        return gdal.GDT_Int32
+    if np.issubdtype(dtype, np.float32):
+        return gdal.GDT_Float32
+    if np.issubdtype(dtype, np.float64):
+        return gdal.GDT_Float64
+    return gdal.GDT_Byte
+
+
+def save_image_with_epsg(image, output_path, epsg=31983, geotransform=None, projection=None, data_type=None):
     """
-    Salva uma imagem (array NumPy) com georreferenciamento (GeoTransform e Projeção)
-    em um arquivo GeoTIFF. Se não for passada uma projeção, usa o EPSG especificado.
+    Save a NumPy image with georeferencing (GeoTransform and Projection) as GeoTIFF.
+    When projection is not provided, the EPSG code is used.
     """
-    
-    # 1) Extrai dimensões
     height, width, channels = image.shape
-    
-    # 2) Obtém o driver "GTiff" (GeoTIFF) do GDAL e cria o dataset de saída
+
     driver = gdal.GetDriverByName("GTiff")
-    dataset = driver.Create(output_path, width, height, channels, gdal.GDT_Byte)
-    
-    # 3) Define a projeção (CRS)
-    # Se o parâmetro 'projection' não for fornecido,
-    # constrói a projeção a partir de um EPSG (padrão = 31983).
+    if data_type is None:
+        data_type = _gdal_dtype_from_numpy(image.dtype)
+    dataset = driver.Create(output_path, width, height, channels, data_type)
+
     if projection is None:
         srs = osr.SpatialReference()
-        srs.ImportFromEPSG(epsg)     # Importa o EPSG
+        srs.ImportFromEPSG(epsg)
         projection = srs.ExportToWkt()
     dataset.SetProjection(projection)
-    
-    # 4) Escreve os dados da imagem em cada banda do dataset
-    # Para cada canal (R, G, B, etc.), grava a matriz correspondente.
+
     for i in range(channels):
         band = dataset.GetRasterBand(i + 1)
         band.WriteArray(image[:, :, i])
-    
-    # 5) Se houver GeoTransform fornecido (ex.: [origem_x, tamanho_px_x, rot, origem_y, rot, tamanho_px_y]),
-    #    aplica ao dataset para posicionar corretamente no espaço.
+
     if geotransform:
         dataset.SetGeoTransform(geotransform)
-    
-    # 6) Salva (flush) e fecha o arquivo
+
     dataset.FlushCache()
     dataset = None

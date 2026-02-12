@@ -80,7 +80,10 @@ def print_run_header(cfg: dict, device: torch.device, class_names: list[str], tr
         f"use_return_features={bool(cfg.get('use_return_features', False))} "
         f"use_scan_angle={bool(cfg.get('use_scan_angle', False))} "
         f"use_normal_features={bool(cfg.get('use_normal_features', False))} "
-        f"use_roughness_feature={bool(cfg.get('use_roughness_feature', False))}"
+        f"use_roughness_feature={bool(cfg.get('use_roughness_feature', False))} "
+        f"use_slope_feature={bool(cfg.get('use_slope_feature', False))} "
+        f"use_planarity_feature={bool(cfg.get('use_planarity_feature', False))} "
+        f"use_linearity_feature={bool(cfg.get('use_linearity_feature', False))}"
     )
     print(f"train_files={train_count} val_files={val_count}")
     print(f"classes={class_names}")
@@ -154,6 +157,9 @@ def main() -> None:
     use_scan_angle = bool(cfg.get("use_scan_angle", False))
     use_normal_features = bool(cfg.get("use_normal_features", False))
     use_roughness_feature = bool(cfg.get("use_roughness_feature", False))
+    use_slope_feature = bool(cfg.get("use_slope_feature", False))
+    use_planarity_feature = bool(cfg.get("use_planarity_feature", False))
+    use_linearity_feature = bool(cfg.get("use_linearity_feature", False))
 
     checkpoints_dir = Path(cfg["paths"]["checkpoints_dir"])
     logs_dir = Path(cfg["paths"]["logs_dir"])
@@ -182,6 +188,9 @@ def main() -> None:
         use_scan_angle=use_scan_angle,
         use_normal_features=use_normal_features,
         use_roughness_feature=use_roughness_feature,
+        use_slope_feature=use_slope_feature,
+        use_planarity_feature=use_planarity_feature,
+        use_linearity_feature=use_linearity_feature,
         normal_cell_size=float(cfg.get("normal_cell_size", 1.0)),
         normal_min_points=int(cfg.get("normal_min_points", 6)),
         roughness_scale=float(cfg.get("roughness_scale", 1.0)),
@@ -204,6 +213,9 @@ def main() -> None:
         use_scan_angle=use_scan_angle,
         use_normal_features=use_normal_features,
         use_roughness_feature=use_roughness_feature,
+        use_slope_feature=use_slope_feature,
+        use_planarity_feature=use_planarity_feature,
+        use_linearity_feature=use_linearity_feature,
         normal_cell_size=float(cfg.get("normal_cell_size", 1.0)),
         normal_min_points=int(cfg.get("normal_min_points", 6)),
         roughness_scale=float(cfg.get("roughness_scale", 1.0)),
@@ -246,6 +258,9 @@ def main() -> None:
         use_scan_angle=use_scan_angle,
         use_normal_features=use_normal_features,
         use_roughness_feature=use_roughness_feature,
+        use_slope_feature=use_slope_feature,
+        use_planarity_feature=use_planarity_feature,
+        use_linearity_feature=use_linearity_feature,
     )
     model = SparseUNet(
         in_channels=in_channels,

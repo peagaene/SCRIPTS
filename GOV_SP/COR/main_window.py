@@ -11,17 +11,20 @@ from image_window import ImageWindow
 from parameter_window import ParameterWindow
 from utils import save_image_with_epsg
 
-# Função para remover o efeito de neblina (dehaze) – sem slider de strength
+# Remove haze effect using a simple luminance boost.
 def remove_haze(image, alpha=1.2):
-    # Converte de BGR para YUV, ajusta o canal Y e volta para BGR
+    # Convert BGR to YUV, adjust Y channel, and convert back.
     yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
     yuv[:, :, 0] = cv2.convertScaleAbs(yuv[:, :, 0], alpha=alpha, beta=0)
     haze_removed = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
     return haze_removed
 
-# Função para aplicar o filtro gaussiano – sem slider de sigma
-def apply_gaussian_blur(image, kernel_size=(3, 3)):
-    return cv2.GaussianBlur(image, kernel_size, 0)
+# Apply gaussian blur using a sigma value.
+def apply_gaussian_blur(image, sigma):
+    if sigma <= 0:
+        return image
+    ksize = int(max(3, 2 * round(3 * sigma) + 1))
+    return cv2.GaussianBlur(image, (ksize, ksize), sigma)
 
 class MainWindow:
     def __init__(self):
@@ -43,7 +46,7 @@ class MainWindow:
         self.edited_image = None
         self.original_edited_image = None
 
-        self.color_params = None  # Parâmetros LAB calculados para a transferência de cor
+        self.color_params = None  # Parametros LAB calculados para a transferencia de cor
 
         self.input_folder = None
         self.output_folder = None
@@ -51,165 +54,96 @@ class MainWindow:
         self.image_window.show()
         self.param_window.show()
         
-        # Botão para reabrir a janela de visualização
+        # Botao para reabrir a janela de visualizacao
         self.btn_reopen_image = QPushButton("Abrir Image Viewer")
         self.param_window.layout().addWidget(self.btn_reopen_image)
         self.btn_reopen_image.clicked.connect(self.reopen_image_view)
         
-        # Botões para processamento em lote
+        # Botoes para processamento em lote
         self.add_batch_processing_buttons()
         
-        # Atributos para thread (se houver processamento assíncrono)
+        # Atributos para thread (se houver processamento assincrono)
         self.future = None
         self.watcher = None
         
     def reopen_image_view(self):
-        # Exibe a janela de visualização se estiver oculta
+        # Exibe a janela de visualizacao se estiver oculta
         self.image_window.show()
         
     # ==================================================
-    # 1) TRANSFERÊNCIA DE COR (USANDO MASK THRESHOLD)
+    # 1) TRANSFERENCIA DE COR (USANDO MASK THRESHOLD)
     # ==================================================
     def color_transfer_callback(self):
         if self.edited_image is None or self.reference_image is None:
-            print("Precisa de imagem a editar e imagem de referência.")
+            print("Precisa de imagem a editar e imagem de referencia.")
             return
     
-        # Calcula os par?metros de transfer?ncia de cor usando a base atual
-        base_image = self.original_edited_image if self.original_edited_image is not None else self.edited_image
-        self.color_params = self.compute_color_transfer_params(base_image, self.reference_image)
-        self.update_image()
-        print("Par?metros de transfer?ncia de cor calculados.")
+        # Calcula os parametros de transferencia de cor usando todos os pixels
+        self.color_params = self.compute_color_transfer_params(self.edited_image, self.reference_image)
+        # Aplica a transferencia de cor em toda a imagem
+        transferred = self.apply_color_transfer_params(self.edited_image, self.color_params)
+        self.edited_image = transferred
+        self.original_edited_image = transferred.copy()
+        self.image_window.update_edited_image(transferred)
+        print("Transferencia de cor aplicada e parametros LAB salvos.")
 
-    def compute_color_transfer_params(self, source_rgb, reference_rgb, l_percentiles=(5, 95)):
-            """
-            Calcula os parâmetros de transferência de cor da imagem source_rgb para reference_rgb,
-            usando estatísticas robustas em LAB:
-
-            - Ignora extremos de luminância (L) com base em percentis (default: 5–95%)
-            - Calcula médias e desvios nessa faixa "saudável"
-            - Cria fatores de escala LIMITADOS para evitar efeito metálico / lente verde
-
-            Retorna um dicionário com:
-            - médias e desvios (L,a,b) da fonte e da referência
-            - fatores de escala lScale, aScale, bScale
-            """
-            # Converte para LAB em float32
-            source_lab = cv2.cvtColor(source_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype("float32")
-            reference_lab = cv2.cvtColor(reference_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype("float32")
-
-            # Achata para [N,3]
-            src_flat = source_lab.reshape(-1, 3)
-            ref_flat = reference_lab.reshape(-1, 3)
-
-            L_src = src_flat[:, 0]
-            L_ref = ref_flat[:, 0]
-
-            # Percentis de L para mascarar sombras profundas / highlights extremos
-            l_low_src, l_high_src = np.percentile(L_src, l_percentiles)
-            l_low_ref, l_high_ref = np.percentile(L_ref, l_percentiles)
-
-            mask_src = (L_src >= l_low_src) & (L_src <= l_high_src)
-            mask_ref = (L_ref >= l_low_ref) & (L_ref <= l_high_ref)
-
-            # Em caso de máscara muito pequena, usa tudo
-            if mask_src.sum() < 100:
-                mask_src = np.ones_like(L_src, dtype=bool)
-            if mask_ref.sum() < 100:
-                mask_ref = np.ones_like(L_ref, dtype=bool)
-
-            src_valid = src_flat[mask_src]
-            ref_valid = ref_flat[mask_ref]
-
-            # Estatísticas na faixa válida
-            lMeanSrc, aMeanSrc, bMeanSrc = src_valid.mean(axis=0)
-            lStdSrc, aStdSrc, bStdSrc = src_valid.std(axis=0)
-
-            lMeanRef, aMeanRef, bMeanRef = ref_valid.mean(axis=0)
-            lStdRef, aStdRef, bStdRef = ref_valid.std(axis=0)
-
-            eps = 1e-6
-
-            def safe_ratio(std_ref, std_src, min_scale, max_scale):
-                if std_src < eps:
-                    return 1.0
-                r = std_ref / std_src
-                return float(np.clip(r, min_scale, max_scale))
-
-            # L pode variar mais; a/b menos para segurar saturação esquisita
-            lScale = safe_ratio(lStdRef, lStdSrc, 0.5, 2.0)
-            aScale = safe_ratio(aStdRef, aStdSrc, 0.5, 1.5)
-            bScale = safe_ratio(bStdRef, bStdSrc, 0.5, 1.5)
-
-            params = {
-                # estatísticas da fonte
-                "lMeanSrc": lMeanSrc,
-                "aMeanSrc": aMeanSrc,
-                "bMeanSrc": bMeanSrc,
-                "lStdSrc": lStdSrc,
-                "aStdSrc": aStdSrc,
-                "bStdSrc": bStdSrc,
-                # estatísticas da referência
-                "lMeanRef": lMeanRef,
-                "aMeanRef": aMeanRef,
-                "bMeanRef": bMeanRef,
-                "lStdRef": lStdRef,
-                "aStdRef": aStdRef,
-                "bStdRef": bStdRef,
-                # fatores de escala já limitados
-                "lScale": lScale,
-                "aScale": aScale,
-                "bScale": bScale,
-            }
-            return params
-
-
-    def apply_color_transfer_params(self, source_rgb, params, strength=0.7, match_l_only=False):
+    def compute_color_transfer_params(self, source_rgb, reference_rgb):
         """
-        Aplica a transfer?ncia de cor ? imagem source_rgb utilizando os par?metros LAB calculados.
+        Calcula os parametros de transferencia de cor da imagem source_rgb para reference_rgb
+        utilizando todos os pixels da imagem fonte.
+        
+        Retorna um dicionario com as medias e desvios padrao dos canais L, a e b.
+        """
+        # Converte as imagens para o espaco LAB (em float32)
+        source_lab = cv2.cvtColor(source_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype("float32")
+        reference_lab = cv2.cvtColor(reference_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype("float32")
+        
+        # Usa todos os pixels da imagem fonte
+        valid_pixels = source_lab.reshape(-1, 3)
+        lMeanSrc = valid_pixels[:, 0].mean()
+        aMeanSrc = valid_pixels[:, 1].mean()
+        bMeanSrc = valid_pixels[:, 2].mean()
+        lStdSrc = valid_pixels[:, 0].std()
+        aStdSrc = valid_pixels[:, 1].std()
+        bStdSrc = valid_pixels[:, 2].std()
+        
+        # Estatisticas da imagem de referencia (usando todos os pixels)
+        lMeanRef, aMeanRef, bMeanRef = cv2.mean(reference_lab)[:3]
+        lStdRef = reference_lab[:, :, 0].std()
+        aStdRef = reference_lab[:, :, 1].std()
+        bStdRef = reference_lab[:, :, 2].std()
+        
+        params = {
+            "lMeanSrc": lMeanSrc, "aMeanSrc": aMeanSrc, "bMeanSrc": bMeanSrc,
+            "lStdSrc": lStdSrc, "aStdSrc": aStdSrc, "bStdSrc": bStdSrc,
+            "lMeanRef": lMeanRef, "aMeanRef": aMeanRef, "bMeanRef": bMeanRef,
+            "lStdRef": lStdRef, "aStdRef": aStdRef, "bStdRef": bStdRef,
+        }
+        return params
 
-        - Usa os fatores de escala limitados (lScale, aScale, bScale) se dispon?veis
-        - 'strength' controla o quanto da imagem corrigida ? misturado (0 = nada, 1 = 100%)
-        - Se 'match_l_only=True', ajusta apenas lumin?ncia (L), mantendo a cor (a/b) original
+    def apply_color_transfer_params(self, source_rgb, params):
+        """
+        Aplica a transferencia de cor a imagem source_rgb utilizando os parametros LAB calculados,
+        alterando TODOS os pixels da imagem.
         """
         # Converte a imagem fonte para LAB (float32)
         source_lab = cv2.cvtColor(source_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype("float32")
-        L, A, B = cv2.split(source_lab)
-
-        eps = 1e-6
-
-        # Recupera escalas (ou cai pro comportamento antigo, se n?o houver)
-        lScale = params.get("lScale", params["lStdRef"] / (params["lStdSrc"] + eps))
-        aScale = params.get("aScale", params["aStdRef"] / (params["aStdSrc"] + eps))
-        bScale = params.get("bScale", params["bStdRef"] / (params["bStdSrc"] + eps))
-
-        # L sempre ? ajustado
-        L_trans = (L - params["lMeanSrc"]) * lScale + params["lMeanRef"]
-
-        if match_l_only:
-            A_trans = A
-            B_trans = B
-        else:
-            A_trans = (A - params["aMeanSrc"]) * aScale + params["aMeanRef"]
-            B_trans = (B - params["bMeanSrc"]) * bScale + params["bMeanRef"]
-
-        # Clamping de seguran?a
-        L_trans = np.clip(L_trans, 0, 255)
-        A_trans = np.clip(A_trans, 0, 255)
-        B_trans = np.clip(B_trans, 0, 255)
-
-        transfer_lab = cv2.merge([L_trans, A_trans, B_trans])
+        (l, a, b) = cv2.split(source_lab)
+        
+        eps = 1e-8  # Para evitar divisao por zero
+        
+        # Aplica a transformacao em TODOS os pixels
+        l_trans = (l - params["lMeanSrc"]) * (params["lStdRef"] / (params["lStdSrc"] + eps)) + params["lMeanRef"]
+        a_trans = (a - params["aMeanSrc"]) * (params["aStdRef"] / (params["aStdSrc"] + eps)) + params["aMeanRef"]
+        b_trans = (b - params["bMeanSrc"]) * (params["bStdRef"] / (params["bStdSrc"] + eps)) + params["bMeanRef"]
+        
+        l_trans = np.clip(l_trans, 0, 255)
+        a_trans = np.clip(a_trans, 0, 255)
+        b_trans = np.clip(b_trans, 0, 255)
+        
+        transfer_lab = cv2.merge([l_trans, a_trans, b_trans])
         transfer_rgb = cv2.cvtColor(transfer_lab.astype("uint8"), cv2.COLOR_LAB2RGB)
-
-        # Mistura com a imagem original para suavizar (strength < 1)
-        if strength < 1.0:
-            rgb_out = (strength * transfer_rgb.astype(np.float32) +
-                    (1.0 - strength) * source_rgb.astype(np.float32))
-            rgb_out = np.clip(rgb_out, 0, 255).astype(np.uint8)
-        else:
-            rgb_out = transfer_rgb
-
-        return rgb_out
+        return transfer_rgb
 
     # ==================================================
     # 2) PROCESSAMENTO EM LOTE
@@ -218,20 +152,20 @@ class MainWindow:
         if not self.input_folder or not self.output_folder:
             print("Please select both input and output folders.")
             return
-
+    
         file_list = [f for f in os.listdir(self.input_folder)
                      if os.path.isfile(os.path.join(self.input_folder, f))]
         total_files = len(file_list)
-
+    
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(total_files)
         self.progress_bar.setValue(0)
-
+    
         print(f"Processing images from {self.input_folder} to {self.output_folder}...")
-
+        
         if not hasattr(self, 'overwrite_existing'):
             self.overwrite_existing = False
-
+    
         for i, filename in enumerate(file_list, start=1):
             input_path = os.path.join(self.input_folder, filename)
             if os.path.isfile(input_path):
@@ -241,29 +175,55 @@ class MainWindow:
                     print(f"File {output_path} already exists. Skipping processing for {filename}.")
                     self.progress_bar.setValue(i)
                     continue
-
+    
                 original_dataset = gdal.Open(input_path)
                 if original_dataset is None:
                     print(f"Failed to open: {input_path}")
                     self.progress_bar.setValue(i)
                     continue
-
+    
                 geotransform = original_dataset.GetGeoTransform()
                 projection = original_dataset.GetProjection()
                 original_dataset = None
-
-                image_bgr = cv2.imread(input_path, cv2.IMREAD_COLOR)
+    
+                image_bgr = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
                 if image_bgr is not None:
-                    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-                    if self.reference_image is not None and self.color_params is None:
-                        self.color_params = self.compute_color_transfer_params(image_rgb, self.reference_image)
+                    if image_bgr.ndim == 2:
+                        image_bgr = cv2.cvtColor(image_bgr, cv2.COLOR_GRAY2BGR)
+                    elif image_bgr.shape[2] == 4:
+                        image_bgr = cv2.cvtColor(image_bgr, cv2.COLOR_BGRA2BGR)
 
-                    # Aplica demais ajustes (blur, dehaze, etc.)
+                    input_dtype = image_bgr.dtype
+                    if np.issubdtype(input_dtype, np.integer):
+                        scale_max = np.iinfo(input_dtype).max
+                    else:
+                        scale_max = float(np.max(image_bgr)) if np.max(image_bgr) > 0 else 1.0
+
+                    image_bgr_f = image_bgr.astype(np.float32)
+                    if scale_max != 255:
+                        image_bgr_f *= (255.0 / scale_max)
+
+                    image_rgb = cv2.cvtColor(image_bgr_f, cv2.COLOR_BGR2RGB)
+    
+                    # Aplica a transferencia de cor, se os parametros ja tiverem sido calculados;
+                    # caso contrario, calcula-os e aplica.
+                    if self.color_params is not None and self.reference_image is not None:
+                        image_rgb = self.apply_color_transfer_params(image_rgb, self.color_params)
+                    else:
+                        if self.reference_image is not None:
+                            self.color_params = self.compute_color_transfer_params(image_rgb, self.reference_image)
+                            image_rgb = self.apply_color_transfer_params(image_rgb, self.color_params)
+                    
+# Remove haze effect using a simple luminance boost.
                     edited_image = self.apply_current_parameters(image_rgb)
 
+                    if scale_max != 255:
+                        edited_image = edited_image.astype(np.float32) * (scale_max / 255.0)
+                        edited_image = np.clip(edited_image, 0, scale_max).astype(input_dtype)
+    
                     self.progress_bar.setValue(i)
-                    QApplication.processEvents()
-
+                    QApplication.processEvents()                   
+    
                     try:
                         save_image_with_epsg(
                             edited_image,
@@ -274,11 +234,12 @@ class MainWindow:
                         print(f"Processed and saved: {output_path}")
                     except Exception as e:
                         print(f"Error processing {filename}: {e}")
-
+    
             self.progress_bar.setValue(i)
             QApplication.processEvents()
-
+    
         print("Processamento completo.")
+    
     def apply_lut_rgb(self, image_rgb, lut_list):
         out = np.zeros_like(image_rgb)
         for ch in range(3):
@@ -286,7 +247,7 @@ class MainWindow:
         return out
     
     # ==================================================
-    # 3) DEMAIS MÉTODOS (BOTÕES, SELEÇÃO DE PASTAS, ETC.)
+    # 3) DEMAIS METODOS (BOTOES, SELECAO DE PASTAS, ETC.)
     # ==================================================
     def add_batch_processing_buttons(self):
         batch_layout = QVBoxLayout()
@@ -318,7 +279,7 @@ class MainWindow:
             print(f"Output folder selected: {self.output_folder}")
     
     # ==================================================
-    # 4) APPLY_CURRENT_PARAMETERS (com blur, dehaze, etc.)
+# Remove haze effect using a simple luminance boost.
     # ==================================================
     def apply_current_parameters(self, image):
         """
@@ -326,20 +287,7 @@ class MainWindow:
         temperature, tint, ganhos R/G/B) e, por fim, filtro Gaussiano e Dehaze se selecionados.
         """
         img = image.astype(np.float32)
-
-        # Color match (se par?metros j? calculados)
-        if self.color_params is not None:
-            strength = self.param_window.strength_slider[1].value() / 100.0
-            img_uint8 = np.clip(img, 0, 255).astype(np.uint8)
-            img_uint8 = self.apply_color_transfer_params(
-                img_uint8, self.color_params, strength=strength
-            )
-            img = img_uint8.astype(np.float32)
     
-
-        if not hasattr(self.param_window, "brightness_slider"):
-            return img.astype(np.uint8)
-
         # 1) Brilho & Contraste
         brightness_factor = 1 + (self.param_window.brightness_slider[1].value() / 100.0)
         contrast_adjust = self.param_window.contrast_slider[1].value() / 100.0
@@ -394,21 +342,27 @@ class MainWindow:
     
         # 5) Filtro Gaussiano, se ativado
         if self.param_window.gaussian_checkbox.isChecked():
-            # Converte de RGB para BGR para aplicar a função e depois volta para RGB
-            bgr_img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2BGR)
-            blurred_bgr = apply_gaussian_blur(bgr_img, (3, 3))
-            img = cv2.cvtColor(blurred_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+            sigma_val = self.param_window.gaussian_sigma_slider[1].value() / 10.0
+            if sigma_val > 0:
+                # Converte de RGB para BGR para aplicar e depois volta para RGB
+                bgr_img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                blurred_bgr = apply_gaussian_blur(bgr_img, sigma_val)
+                img = cv2.cvtColor(blurred_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
             
         # 6) Dehaze, se ativado
         if self.param_window.dehaze_checkbox.isChecked():
-            bgr_img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2BGR)
-            dehazed_bgr = remove_haze(bgr_img, alpha=1.2)
-            img = cv2.cvtColor(dehazed_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
-    
+            strength = self.param_window.dehaze_strength_slider[1].value()
+            if strength > 0:
+                alpha = 1.0 + (strength / 100.0)
+                bgr_img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                dehazed_bgr = remove_haze(bgr_img, alpha=alpha)
+                img = cv2.cvtColor(dehazed_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+
+        
         return img.astype(np.uint8)
     
     # ==================================================
-    # 7) CARREGAR / SALVAR PARÂMETROS
+    # 7) CARREGAR / SALVAR PARAMETROS
     # ==================================================
     def load_reference_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -418,10 +372,20 @@ class MainWindow:
             "Images (*.png *.jpg *.tif *.bmp *.jp2)"
         )
         if file_path:
-            self.reference_image = cv2.imread(file_path)
-            self.reference_image = cv2.cvtColor(self.reference_image, cv2.COLOR_BGR2RGB)
+            ref_bgr = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+            if ref_bgr is None:
+                print(f"Nao foi possivel carregar {file_path}")
+                return
+            if ref_bgr.ndim == 2:
+                ref_bgr = cv2.cvtColor(ref_bgr, cv2.COLOR_GRAY2BGR)
+            elif ref_bgr.shape[2] == 4:
+                ref_bgr = cv2.cvtColor(ref_bgr, cv2.COLOR_BGRA2BGR)
+            if ref_bgr.dtype != np.uint8:
+                scale_max = np.iinfo(ref_bgr.dtype).max
+                ref_bgr = (ref_bgr.astype(np.float32) * (255.0 / scale_max)).astype(np.uint8)
+            self.reference_image = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
             self.image_window.update_reference_image(self.reference_image)
-     
+    
     def load_image_to_edit(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self.param_window,
@@ -430,26 +394,33 @@ class MainWindow:
             "Images (*.png *.jpg *.tif *.bmp *.jp2)"
         )
         if file_path:
-            image_bgr = cv2.imread(file_path)
+            image_bgr = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
             if image_bgr is None:
-                print(f"Não foi possível carregar {file_path}")
+                print(f"Nao foi possivel carregar {file_path}")
                 return
-        
+
+            if image_bgr.ndim == 2:
+                image_bgr = cv2.cvtColor(image_bgr, cv2.COLOR_GRAY2BGR)
+            elif image_bgr.shape[2] == 4:
+                image_bgr = cv2.cvtColor(image_bgr, cv2.COLOR_BGRA2BGR)
+            if image_bgr.dtype != np.uint8:
+                scale_max = np.iinfo(image_bgr.dtype).max
+                image_bgr = (image_bgr.astype(np.float32) * (255.0 / scale_max)).astype(np.uint8)
+
             full_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        
+
             # Guarda a imagem para processamento final
             self.edited_image = full_rgb
             self.original_edited_image = full_rgb.copy()
-        
-            # Exibe a imagem em alta resolução
+
+            # Exibe a imagem em alta resolucao
             self.image_window.update_edited_image(full_rgb)
-            print("Imagem carregada em alta resolução.")
-     
+            print("Imagem carregada em alta resolucao.")
+
     def reset_image(self):
         if self.original_edited_image is not None:
             self.edited_image = self.original_edited_image.copy()
             self.image_window.update_edited_image(self.edited_image)
-            self.color_params = None
             sliders = [
                 self.param_window.saturation_slider,
                 self.param_window.value_slider,
@@ -480,7 +451,7 @@ class MainWindow:
             self.param_window.gaussian_sigma_slider[1].setValue(0)
             self.param_window.dehaze_checkbox.setChecked(False)
             self.param_window.dehaze_strength_slider[1].setValue(0)
-    
+
     def update_image(self):
         if self.edited_image is not None and self.original_edited_image is not None:
             updated_image = self.apply_current_parameters(self.original_edited_image.copy())

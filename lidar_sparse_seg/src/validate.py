@@ -66,6 +66,9 @@ def main() -> None:
     use_scan_angle = bool(cfg.get("use_scan_angle", False))
     use_normal_features = bool(cfg.get("use_normal_features", False))
     use_roughness_feature = bool(cfg.get("use_roughness_feature", False))
+    use_slope_feature = bool(cfg.get("use_slope_feature", False))
+    use_planarity_feature = bool(cfg.get("use_planarity_feature", False))
+    use_linearity_feature = bool(cfg.get("use_linearity_feature", False))
 
     split_key = "val_split" if args.split == "val" else "test_split"
     ds = LidarSemanticDataset(
@@ -84,6 +87,9 @@ def main() -> None:
         use_scan_angle=use_scan_angle,
         use_normal_features=use_normal_features,
         use_roughness_feature=use_roughness_feature,
+        use_slope_feature=use_slope_feature,
+        use_planarity_feature=use_planarity_feature,
+        use_linearity_feature=use_linearity_feature,
         normal_cell_size=float(cfg.get("normal_cell_size", 1.0)),
         normal_min_points=int(cfg.get("normal_min_points", 6)),
         roughness_scale=float(cfg.get("roughness_scale", 1.0)),
@@ -105,6 +111,9 @@ def main() -> None:
         use_scan_angle=use_scan_angle,
         use_normal_features=use_normal_features,
         use_roughness_feature=use_roughness_feature,
+        use_slope_feature=use_slope_feature,
+        use_planarity_feature=use_planarity_feature,
+        use_linearity_feature=use_linearity_feature,
     )
     model = SparseUNet(
         in_channels=in_channels,
@@ -123,7 +132,9 @@ def main() -> None:
     print(
         f"files={len(ds)} batch_size={cfg['batch_size']} voxel_size={cfg['voxel_size']} "
         f"use_hag={cfg['use_hag']} use_return_features={use_return_features} use_scan_angle={use_scan_angle} "
-        f"use_normal_features={use_normal_features} use_roughness_feature={use_roughness_feature}"
+        f"use_normal_features={use_normal_features} use_roughness_feature={use_roughness_feature} "
+        f"use_slope_feature={use_slope_feature} use_planarity_feature={use_planarity_feature} "
+        f"use_linearity_feature={use_linearity_feature}"
     )
     print("=" * 90)
 

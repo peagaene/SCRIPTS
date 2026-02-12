@@ -1,0 +1,59 @@
+{
+  "model": "per_channel_affine_percentile",
+  "percentiles": {
+    "low": 3.0,
+    "high": 97.0
+  },
+  "source_channel_order": "RGBI",
+  "calibration_tiles_used": 127,
+  "channels": {
+    "R": {
+      "enabled": true,
+      "reason": "ok",
+      "gain": 0.85,
+      "offset": -2.275000000289168,
+      "source_samples": 25400000,
+      "reference_samples": 2200000,
+      "source_percentile_low": 39.0,
+      "source_percentile_high": 224.0,
+      "reference_percentile_low": 56.0,
+      "reference_percentile_high": 163.0
+    },
+    "G": {
+      "enabled": true,
+      "reason": "ok",
+      "gain": 0.85,
+      "offset": 8.549999999713862,
+      "source_samples": 25400000,
+      "reference_samples": 2200000,
+      "source_percentile_low": 44.0,
+      "source_percentile_high": 210.0,
+      "reference_percentile_low": 69.0,
+      "reference_percentile_high": 164.0
+    },
+    "B": {
+      "enabled": true,
+      "reason": "ok",
+      "gain": 0.85,
+      "offset": 10.674999999727888,
+      "source_samples": 25400000,
+      "reference_samples": 2200000,
+      "source_percentile_low": 41.0,
+      "source_percentile_high": 188.0,
+      "reference_percentile_low": 68.0,
+      "reference_percentile_high": 148.0
+    },
+    "I": {
+      "enabled": true,
+      "reason": "ok",
+      "gain": 0.927,
+      "offset": 20.349999999599987,
+      "source_samples": 25400000,
+      "reference_samples": 2200000,
+      "source_percentile_low": 56.0,
+      "source_percentile_high": 201.0,
+      "reference_percentile_low": 76.0,
+      "reference_percentile_high": 192.0
+    }
+  }
+}

@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 from torch.utils.data import Dataset
 
-from src.utils.geom_features import compute_local_normal_features
+from src.utils.geom_features import compute_local_geom_features
 from src.utils.io_las import read_las_points, resolve_path
 from src.utils.voxelize import voxelize_points
 
@@ -30,6 +30,9 @@ class LidarSemanticDataset(Dataset):
         use_scan_angle: bool = False,
         use_normal_features: bool = False,
         use_roughness_feature: bool = False,
+        use_slope_feature: bool = False,
+        use_planarity_feature: bool = False,
+        use_linearity_feature: bool = False,
         normal_cell_size: float = 1.0,
         normal_min_points: int = 6,
         roughness_scale: float = 1.0,
@@ -48,6 +51,9 @@ class LidarSemanticDataset(Dataset):
         self.use_scan_angle = bool(use_scan_angle)
         self.use_normal_features = bool(use_normal_features)
         self.use_roughness_feature = bool(use_roughness_feature)
+        self.use_slope_feature = bool(use_slope_feature)
+        self.use_planarity_feature = bool(use_planarity_feature)
+        self.use_linearity_feature = bool(use_linearity_feature)
         self.normal_cell_size = float(normal_cell_size)
         self.normal_min_points = int(normal_min_points)
         self.roughness_scale = float(roughness_scale)
@@ -64,6 +70,9 @@ class LidarSemanticDataset(Dataset):
             use_scan_angle=self.use_scan_angle,
             use_normal_features=self.use_normal_features,
             use_roughness_feature=self.use_roughness_feature,
+            use_slope_feature=self.use_slope_feature,
+            use_planarity_feature=self.use_planarity_feature,
+            use_linearity_feature=self.use_linearity_feature,
         )
 
     @staticmethod
@@ -263,8 +272,14 @@ class LidarSemanticDataset(Dataset):
             feat_list.append(num_returns_norm)
         if self.use_scan_angle:
             feat_list.append(self._normalize_scan_angle(scan_angle))
-        if self.use_normal_features or self.use_roughness_feature:
-            normal_z, roughness = compute_local_normal_features(
+        if (
+            self.use_normal_features
+            or self.use_roughness_feature
+            or self.use_slope_feature
+            or self.use_planarity_feature
+            or self.use_linearity_feature
+        ):
+            normal_z, roughness, slope, planarity, linearity = compute_local_geom_features(
                 xyz=xyz,
                 cell_size=self.normal_cell_size,
                 min_points=self.normal_min_points,
@@ -274,6 +289,12 @@ class LidarSemanticDataset(Dataset):
             if self.use_roughness_feature:
                 roughness_norm = np.clip(roughness / max(self.roughness_scale, 1e-6), 0.0, 1.0).astype(np.float32)
                 feat_list.append(roughness_norm)
+            if self.use_slope_feature:
+                feat_list.append(slope.astype(np.float32))
+            if self.use_planarity_feature:
+                feat_list.append(planarity.astype(np.float32))
+            if self.use_linearity_feature:
+                feat_list.append(linearity.astype(np.float32))
 
         features = np.stack(feat_list, axis=1).astype(np.float32)
         vox = voxelize_points(xyz=xyz, features=features, labels=labels, voxel_size=self.voxel_size, num_classes=self.num_classes)
@@ -334,6 +355,9 @@ def get_input_channels(
     use_scan_angle: bool,
     use_normal_features: bool = False,
     use_roughness_feature: bool = False,
+    use_slope_feature: bool = False,
+    use_planarity_feature: bool = False,
+    use_linearity_feature: bool = False,
 ) -> int:
     channels = 2  # z_rel, intensity_norm
     if use_hag:
@@ -345,5 +369,11 @@ def get_input_channels(
     if use_normal_features:
         channels += 1
     if use_roughness_feature:
+        channels += 1
+    if use_slope_feature:
+        channels += 1
+    if use_planarity_feature:
+        channels += 1
+    if use_linearity_feature:
         channels += 1
     return channels

@@ -1,0 +1,61 @@
+{
+  "source": {
+    "channel_order": "RGBI",
+    "calibration_tiles": [
+      "I:/OUT_SI07_03092025"
+    ],
+    "apply_tiles": [
+      "I:/OUT_SI07_03092025"
+    ]
+  },
+  "reference": {
+    "rgb_channel_order": "RGB",
+    "rgb_images": [
+      "I:/SP22_PROCESSAMENTO/ORTO_MODELO/AEROCARTA/SP22/AC_05",
+      "I:/SP22_PROCESSAMENTO/ORTO_MODELO/AEROCARTA/SP22/Ac-10"
+    ],
+    "cir_channel_order": "IRRG",
+    "cir_images": [
+      "I:/SP22_PROCESSAMENTO/ORTO_MODELO/AEROCARTA/IR/LIGA* - IR/SP22/AC_10",
+      "I:/SP22_PROCESSAMENTO/ORTO_MODELO/AEROCARTA/IR/LIGA* - IR/SP22/AC_05"
+    ]
+  },
+  "sampling": {
+    "max_pixels_per_image": 200000,
+    "downsample_max_side": 1024,
+    "percentile_low": 3.0,
+    "percentile_high": 97.0,
+    "seed": 42
+  },
+  "calibration_filter": {
+    "enabled": true,
+    "channels": [
+      "R",
+      "G",
+      "B",
+      "I"
+    ],
+    "zscore_threshold": 3.5,
+    "downsample_max_side": 256,
+    "min_keep": 6
+  },
+  "constraints": {
+    "gain_min": 0.85,
+    "gain_max": 1.15,
+    "per_channel": {
+      "I": {
+        "gain_min": 0.9,
+        "gain_max": 1.25
+      }
+    }
+  },
+  "ir_tuning": {
+    "gain_scale": 1.03,
+    "offset_shift": 2.0
+  },
+  "output": {
+    "dir": "E:/ORTO_SI_07",
+    "suffix": "_matched",
+    "overwrite": false
+  }
+}

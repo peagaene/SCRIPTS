@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from src.datasets.lidar_dataset import get_input_channels
 from src.models.minkunet import SparseUNet
-from src.utils.geom_features import compute_local_normal_features
+from src.utils.geom_features import compute_local_geom_features
 from src.utils.io_las import read_las_points, write_las_with_classification
 from src.utils.spconv_utils import build_spconv_tensor
 from src.utils.voxelize import voxelize_points
@@ -29,6 +29,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--block_size", type=float, default=128.0, help="XY block size in meters")
     parser.add_argument("--max_points_per_block", type=int, default=400000)
+    parser.add_argument("--postprocess", action="store_true", help="Enable post-processing")
+    parser.add_argument("--pp_smooth_voxel_size", type=float, default=None)
+    parser.add_argument("--pp_min_building_hag", type=float, default=None)
+    parser.add_argument("--pp_building_class", type=int, default=None, help="Internal class id for building")
+    parser.add_argument("--pp_fallback_class", type=int, default=None, help="Internal class id when low-HAG building")
+    parser.add_argument("--pp_max_ground_hag", type=float, default=None)
+    parser.add_argument("--pp_ground_class", type=int, default=None, help="Internal class id for ground")
+    parser.add_argument("--pp_ground_fallback_class", type=int, default=None)
     return parser.parse_args()
 
 
@@ -126,6 +134,88 @@ def iter_blocks(xy: np.ndarray, block_size: float) -> list[np.ndarray]:
     return blocks
 
 
+def smooth_predictions_by_voxel(
+    xyz: np.ndarray,
+    pred_train: np.ndarray,
+    num_classes: int,
+    smooth_voxel_size: float,
+) -> np.ndarray:
+    if xyz.shape[0] == 0 or pred_train.shape[0] == 0:
+        return pred_train
+    if smooth_voxel_size <= 0:
+        return pred_train
+
+    xyz_min = np.min(xyz, axis=0, keepdims=True)
+    vox = np.floor((xyz - xyz_min) / smooth_voxel_size).astype(np.int64)
+    _, inv = np.unique(vox, axis=0, return_inverse=True)
+    num_vox = int(inv.max()) + 1
+
+    counts = np.zeros((num_classes, num_vox), dtype=np.int64)
+    for c in range(num_classes):
+        mask = pred_train == c
+        if np.any(mask):
+            counts[c] = np.bincount(inv[mask], minlength=num_vox)
+    majority_cls = np.argmax(counts, axis=0).astype(np.int64)
+    return majority_cls[inv]
+
+
+def apply_postprocess(
+    pred_train: np.ndarray,
+    xyz_all: np.ndarray,
+    cls_all: np.ndarray,
+    valid_idx: np.ndarray,
+    non_ignored_idx: np.ndarray,
+    num_classes: int,
+    use_hag: bool,
+    hag_cell_size: float,
+    smooth_voxel_size: float,
+    min_building_hag: float,
+    building_class: int,
+    max_ground_hag: float,
+    ground_class: int,
+    ground_fallback_class: int,
+    building_fallback_class: int,
+    vegetation_class: int,
+    vegetation_fallback_class: int,
+    fallback_class: int,
+) -> np.ndarray:
+    out = pred_train.copy()
+    xyz_valid = xyz_all[valid_idx]
+    out = smooth_predictions_by_voxel(
+        xyz=xyz_valid,
+        pred_train=out,
+        num_classes=num_classes,
+        smooth_voxel_size=smooth_voxel_size,
+    )
+
+    hag_valid = None
+    if use_hag and (min_building_hag >= 0 or max_ground_hag >= 0):
+        global_to_non_ignored = np.full((xyz_all.shape[0],), -1, dtype=np.int64)
+        global_to_non_ignored[non_ignored_idx] = np.arange(non_ignored_idx.shape[0], dtype=np.int64)
+        non_ignored_pos = global_to_non_ignored[valid_idx]
+        valid_non_ignored_mask = non_ignored_pos >= 0
+        if np.any(valid_non_ignored_mask):
+            hag_non_ignored = compute_hag(
+                xyz=xyz_all[non_ignored_idx],
+                las_cls=cls_all[non_ignored_idx],
+                cell_size=hag_cell_size,
+            )
+            hag_valid = np.zeros((valid_idx.shape[0],), dtype=np.float32)
+            hag_valid[valid_non_ignored_mask] = hag_non_ignored[non_ignored_pos[valid_non_ignored_mask]]
+
+    if hag_valid is not None and min_building_hag >= 0:
+        if 0 <= building_class < num_classes and 0 <= building_fallback_class < num_classes:
+            low_hag_building = (out == building_class) & (hag_valid < min_building_hag)
+            out[low_hag_building] = building_fallback_class
+
+    if hag_valid is not None and max_ground_hag >= 0:
+        if 0 <= ground_class < num_classes and 0 <= ground_fallback_class < num_classes:
+            high_hag_ground = (out == ground_class) & (hag_valid > max_ground_hag)
+            out[high_hag_ground] = ground_fallback_class
+
+    return out
+
+
 def infer_file(
     model: SparseUNet,
     path_in: Path,
@@ -134,6 +224,19 @@ def infer_file(
     device: torch.device,
     block_size: float,
     max_points_per_block: int,
+    postprocess_enabled: bool,
+    pp_smooth_voxel_size: float,
+    pp_min_building_hag: float,
+    pp_building_class: int,
+    pp_max_ground_hag: float,
+    pp_ground_class: int,
+    pp_ground_fallback_class: int,
+    pp_building_fallback_class: int,
+    pp_vegetation_class: int,
+    pp_vegetation_fallback_class: int,
+    pp_unresolved_train_fallback_class: int,
+    pp_unresolved_output_las_class: int,
+    pp_fallback_class: int,
 ) -> None:
     pts = read_las_points(path_in)
     n_total = pts["classification"].shape[0]
@@ -222,8 +325,14 @@ def infer_file(
                 feat_list.append(num_returns_norm)
             if bool(cfg.get("use_scan_angle", False)):
                 feat_list.append(normalize_scan_angle(scan_angle))
-            if bool(cfg.get("use_normal_features", False)) or bool(cfg.get("use_roughness_feature", False)):
-                normal_z, roughness = compute_local_normal_features(
+            if (
+                bool(cfg.get("use_normal_features", False))
+                or bool(cfg.get("use_roughness_feature", False))
+                or bool(cfg.get("use_slope_feature", False))
+                or bool(cfg.get("use_planarity_feature", False))
+                or bool(cfg.get("use_linearity_feature", False))
+            ):
+                normal_z, roughness, slope, planarity, linearity = compute_local_geom_features(
                     xyz=xyz_valid_block,
                     cell_size=float(cfg.get("normal_cell_size", 1.0)),
                     min_points=int(cfg.get("normal_min_points", 6)),
@@ -237,10 +346,16 @@ def infer_file(
                         1.0,
                     ).astype(np.float32)
                     feat_list.append(roughness_norm)
+                if bool(cfg.get("use_slope_feature", False)):
+                    feat_list.append(slope.astype(np.float32))
+                if bool(cfg.get("use_planarity_feature", False)):
+                    feat_list.append(planarity.astype(np.float32))
+                if bool(cfg.get("use_linearity_feature", False)):
+                    feat_list.append(linearity.astype(np.float32))
 
             features = np.stack(feat_list, axis=1).astype(np.float32)
             vox = voxelize_points(
-                xyz=xyz,
+                xyz=xyz_valid_block,
                 features=features,
                 labels=None,
                 voxel_size=float(cfg["voxel_size"]),
@@ -268,11 +383,36 @@ def infer_file(
 
     unresolved = train_pred < 0
     if np.any(unresolved):
-        mapped_train_labels = np.array(sorted(train_to_las.keys()), dtype=np.int64)
-        fallback = np.random.choice(mapped_train_labels, size=unresolved.sum())
-        train_pred[unresolved] = fallback
+        unresolved_fill = pp_unresolved_train_fallback_class
+        if not (0 <= unresolved_fill < int(cfg["num_classes"])):
+            unresolved_fill = 0
+        train_pred[unresolved] = unresolved_fill
+
+    if postprocess_enabled:
+        train_pred = apply_postprocess(
+            pred_train=train_pred,
+            xyz_all=xyz_all,
+            cls_all=cls_all,
+            valid_idx=valid_idx,
+            non_ignored_idx=non_ignored_idx,
+            num_classes=int(cfg["num_classes"]),
+            use_hag=bool(cfg["use_hag"]),
+            hag_cell_size=float(cfg["hag_cell_size"]),
+            smooth_voxel_size=pp_smooth_voxel_size,
+            min_building_hag=pp_min_building_hag,
+            building_class=pp_building_class,
+            max_ground_hag=pp_max_ground_hag,
+            ground_class=pp_ground_class,
+            ground_fallback_class=pp_ground_fallback_class,
+            building_fallback_class=pp_building_fallback_class,
+            vegetation_class=pp_vegetation_class,
+            vegetation_fallback_class=pp_vegetation_fallback_class,
+            fallback_class=pp_fallback_class,
+        )
 
     pred_las_valid = np.array([train_to_las[int(v)] for v in train_pred], dtype=np.uint8)
+    if np.any(unresolved):
+        pred_las_valid[unresolved] = np.uint8(pp_unresolved_output_las_class)
     pred_cls_las[valid_idx] = pred_las_valid
 
     write_las_with_classification(path_in, path_out, pred_cls_las)
@@ -301,6 +441,9 @@ def main() -> None:
         use_scan_angle=bool(cfg.get("use_scan_angle", False)),
         use_normal_features=bool(cfg.get("use_normal_features", False)),
         use_roughness_feature=bool(cfg.get("use_roughness_feature", False)),
+        use_slope_feature=bool(cfg.get("use_slope_feature", False)),
+        use_planarity_feature=bool(cfg.get("use_planarity_feature", False)),
+        use_linearity_feature=bool(cfg.get("use_linearity_feature", False)),
     )
 
     model = SparseUNet(
@@ -314,6 +457,48 @@ def main() -> None:
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
+    pp_cfg = cfg.get("postprocess", {})
+    postprocess_enabled = bool(pp_cfg.get("enabled", False)) or bool(args.postprocess)
+    pp_smooth_voxel_size = float(
+        args.pp_smooth_voxel_size
+        if args.pp_smooth_voxel_size is not None
+        else pp_cfg.get("smooth_voxel_size", 0.75)
+    )
+    pp_min_building_hag = float(
+        args.pp_min_building_hag
+        if args.pp_min_building_hag is not None
+        else pp_cfg.get("min_building_hag", 0.75)
+    )
+    pp_max_ground_hag = float(
+        args.pp_max_ground_hag
+        if args.pp_max_ground_hag is not None
+        else pp_cfg.get("max_ground_hag", -1.0)
+    )
+    pp_building_class = int(
+        args.pp_building_class
+        if args.pp_building_class is not None
+        else pp_cfg.get("building_class", 1)
+    )
+    pp_ground_class = int(
+        args.pp_ground_class
+        if args.pp_ground_class is not None
+        else pp_cfg.get("ground_class", 0)
+    )
+    pp_ground_fallback_class = int(
+        args.pp_ground_fallback_class
+        if args.pp_ground_fallback_class is not None
+        else pp_cfg.get("ground_fallback_class", 2)
+    )
+    pp_building_fallback_class = int(pp_cfg.get("building_fallback_class", 2))
+    pp_vegetation_class = int(pp_cfg.get("vegetation_class", 2))
+    pp_vegetation_fallback_class = int(pp_cfg.get("vegetation_fallback_class", 1))
+    pp_unresolved_train_fallback_class = int(pp_cfg.get("unresolved_train_fallback_class", 2))
+    pp_unresolved_output_las_class = int(pp_cfg.get("unresolved_output_las_class", 1))
+    pp_fallback_class = int(
+        args.pp_fallback_class
+        if args.pp_fallback_class is not None
+        else pp_cfg.get("fallback_class", 0)
+    )
     input_path = Path(args.input)
     output_path = Path(args.output)
 
@@ -336,6 +521,19 @@ def main() -> None:
             device=device,
             block_size=float(args.block_size),
             max_points_per_block=int(args.max_points_per_block),
+            postprocess_enabled=postprocess_enabled,
+            pp_smooth_voxel_size=pp_smooth_voxel_size,
+            pp_min_building_hag=pp_min_building_hag,
+            pp_building_class=pp_building_class,
+            pp_max_ground_hag=pp_max_ground_hag,
+            pp_ground_class=pp_ground_class,
+            pp_ground_fallback_class=pp_ground_fallback_class,
+            pp_building_fallback_class=pp_building_fallback_class,
+            pp_vegetation_class=pp_vegetation_class,
+            pp_vegetation_fallback_class=pp_vegetation_fallback_class,
+            pp_unresolved_train_fallback_class=pp_unresolved_train_fallback_class,
+            pp_unresolved_output_las_class=pp_unresolved_output_las_class,
+            pp_fallback_class=pp_fallback_class,
         )
 
 

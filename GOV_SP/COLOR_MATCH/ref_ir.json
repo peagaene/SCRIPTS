@@ -1,0 +1,21 @@
+﻿{
+    "type":  "IR_REFERENCE",
+    "source_dirs":  [
+                        "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_10",
+                        "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_05"
+                    ],
+    "cir_images":  [
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_05\\SF-22-Z-B-II-3-NE-B.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_05\\SF-22-Z-B-II-3-NE-D.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_05\\SF-22-Z-B-II-3-SE-B.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_05\\SF-22-Z-B-II-3-SE-D.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_05\\SF-22-Z-B-II-3-SE-F.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_05\\SF-22-Z-B-V-1-NE-B.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_10\\SF-22-Z-B-V-2-NO-C.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_10\\SF-22-Z-B-V-2-NO-E.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_10\\SF-22-Z-B-V-2-SO-A.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_10\\SF-22-Z-B-V-2-SO-C.tif",
+                       "I:\\SP22_PROCESSAMENTO\\ORTO_MODELO\\AEROCARTA\\IR\\LIGAÇÃO_AC x EF - IR\\SP22\\AC_10\\SF-22-Z-B-V-2-SO-E.tif"
+                   ],
+    "count":  11
+}

@@ -1,0 +1,84 @@
+{
+  "source": {
+    "channel_order": "RGBI",
+    "calibration_tiles": [
+      "D:/SCRIPTS/DADOS/AREA_01/calibracao/*.tif"
+    ],
+    "apply_tiles": [
+      "D:/SCRIPTS/DADOS/AREA_01/tiles/*.tif"
+    ]
+  },
+  "reference": {
+    "rgb_channel_order": "RGB",
+    "rgb_images": [
+      "D:/SCRIPTS/DADOS/REF_EMPRESA/RGB/*.tif"
+    ],
+    "cir_channel_order": "IRRG",
+    "cir_images": [
+      "D:/SCRIPTS/DADOS/REF_EMPRESA/CIR/*.tif"
+    ]
+  },
+  "sampling": {
+    "max_pixels_per_image": 200000,
+    "downsample_max_side": 1024,
+    "percentile_low": 2.0,
+    "percentile_high": 98.0,
+    "seed": 42
+  },
+  "calibration_filter": {
+    "enabled": true,
+    "channels": [
+      "R",
+      "G",
+      "B",
+      "I"
+    ],
+    "zscore_threshold": 3.5,
+    "downsample_max_side": 256,
+    "min_keep": 3
+  },
+  "constraints": {
+    "gain_min": 0.85,
+    "gain_max": 1.15,
+    "per_channel": {
+      "I": {
+        "gain_min": 0.9,
+        "gain_max": 1.2
+      }
+    }
+  },
+  "ir_tuning": {
+    "gain_scale": 1.0,
+    "offset_shift": 0.0
+  },
+  "vegetation_tuning": {
+    "enabled": true,
+    "strength": 1.0,
+    "mask": {
+      "exg_threshold": 20.0,
+      "exg_softness": 15.0,
+      "rg_ratio_threshold": 1.05,
+      "rg_ratio_softness": 0.1,
+      "gb_ratio_threshold": 1.05,
+      "gb_ratio_softness": 0.1,
+      "use_ndvi": true,
+      "ndvi_threshold": 0.05,
+      "ndvi_softness": 0.05
+    },
+    "adjust": {
+      "red_gain": 0.99,
+      "red_offset": 0.0,
+      "green_gain": 1.07,
+      "green_offset": 0.0,
+      "blue_gain": 0.99,
+      "blue_offset": 0.0,
+      "ir_gain": 1.0,
+      "ir_offset": 0.0
+    }
+  },
+  "output": {
+    "dir": "D:/SCRIPTS/DADOS/AREA_01_saida",
+    "suffix": "_matched",
+    "overwrite": false
+  }
+}
