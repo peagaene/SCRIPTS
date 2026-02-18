@@ -2,27 +2,27 @@
   "source": {
     "channel_order": "RGBI",
     "calibration_tiles": [
-      "D:/SCRIPTS/DADOS/AREA_01/calibracao/*.tif"
+      "J:\\SI_04\\OUT"
     ],
     "apply_tiles": [
-      "D:/SCRIPTS/DADOS/AREA_01/tiles/*.tif"
+      "J:\\SI_04\\OUT"
     ]
   },
   "reference": {
     "rgb_channel_order": "RGB",
     "rgb_images": [
-      "D:/SCRIPTS/DADOS/REF_EMPRESA/RGB/*.tif"
+      "E:/SP_OUT/REF_RGB/*.tif"
     ],
     "cir_channel_order": "IRRG",
     "cir_images": [
-      "D:/SCRIPTS/DADOS/REF_EMPRESA/CIR/*.tif"
+      "E:/SP_OUT/REF_IR/*.tif"
     ]
   },
   "sampling": {
-    "max_pixels_per_image": 200000,
+    "max_pixels_per_image": 120000,
     "downsample_max_side": 1024,
-    "percentile_low": 2.0,
-    "percentile_high": 98.0,
+    "percentile_low": 3.0,
+    "percentile_high": 97.0,
     "seed": 42
   },
   "calibration_filter": {
@@ -35,7 +35,7 @@
     ],
     "zscore_threshold": 3.5,
     "downsample_max_side": 256,
-    "min_keep": 3
+    "min_keep": 6
   },
   "constraints": {
     "gain_min": 0.85,
@@ -43,13 +43,13 @@
     "per_channel": {
       "I": {
         "gain_min": 0.9,
-        "gain_max": 1.2
+        "gain_max": 1.25
       }
     }
   },
   "ir_tuning": {
-    "gain_scale": 1.0,
-    "offset_shift": 0.0
+    "gain_scale": 1.03,
+    "offset_shift": 2.0
   },
   "vegetation_tuning": {
     "enabled": true,
@@ -76,9 +76,22 @@
       "ir_offset": 0.0
     }
   },
+  "refinement": {
+    "enabled": true,
+    "base_params_file": "D:/SCRIPTS/GOV_SP/COLOR_MATCH/hybrid_configs/out/global_params.json",
+    "blend": 0.6,
+    "max_delta_gain": 0.05,
+    "max_delta_offset": 12.0,
+    "per_channel": {
+      "I": {
+        "max_delta_gain": 0.08,
+        "max_delta_offset": 16.0
+      }
+    }
+  },
   "output": {
-    "dir": "D:/SCRIPTS/DADOS/AREA_01_saida",
-    "suffix": "_corrigido",
+    "dir": "E:/SP_OUT/HYBRID/SI_04",
+    "suffix": "_matched",
     "overwrite": false
   }
 }

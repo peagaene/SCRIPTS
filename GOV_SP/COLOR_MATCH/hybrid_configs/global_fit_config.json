@@ -2,27 +2,41 @@
   "source": {
     "channel_order": "RGBI",
     "calibration_tiles": [
-      "D:/SCRIPTS/DADOS/AREA_01/calibracao/*.tif"
-    ],
-    "apply_tiles": [
-      "D:/SCRIPTS/DADOS/AREA_01/tiles/*.tif"
+      "J:\\SI_01\\OUT",
+      "J:\\SI_02\\OUT",
+      "J:\\SI_03\\OUT",
+      "J:\\SI_04\\OUT",
+      "I:\\SI_05\\OUT",
+      "J:\\SI_06\\OUT",
+      "\\\\192.168.2.28\\f\\OUT",
+      "J:\\SI_08\\OUT",
+      "\\\\192.168.2.27\\h\\TPHOTO_SI_09\\OUT",
+      "\\\\192.168.2.27\\e\\SI_10\\TPHOTO\\OUT",
+      "I:\\SI_11\\TPHOTO\\OUT",
+      "H:\\TPHOTO_SI12\\out",
+      "\\\\192.168.2.27\\f\\SI_13\\OUT_SI13",
+      "\\\\192.168.2.28\\f\\SI_14\\OUT",
+      "\\\\192.168.2.28\\f\\SI_14\\ILHA_1\\OUT",
+      "\\\\192.168.2.28\\f\\SI_14\\ILHA_2\\OUT",
+      "\\\\192.168.2.27\\f\\SI_15\\OUT",
+      "\\\\192.168.2.27\\i\\TPHOTO_SI_16\\out"
     ]
   },
   "reference": {
     "rgb_channel_order": "RGB",
     "rgb_images": [
-      "D:/SCRIPTS/DADOS/REF_EMPRESA/RGB/*.tif"
+      "E:/SP_OUT/REF_RGB/*.tif"
     ],
     "cir_channel_order": "IRRG",
     "cir_images": [
-      "D:/SCRIPTS/DADOS/REF_EMPRESA/CIR/*.tif"
+      "E:/SP_OUT/REF_IR/*.tif"
     ]
   },
   "sampling": {
-    "max_pixels_per_image": 200000,
+    "max_pixels_per_image": 120000,
     "downsample_max_side": 1024,
-    "percentile_low": 2.0,
-    "percentile_high": 98.0,
+    "percentile_low": 3.0,
+    "percentile_high": 97.0,
     "seed": 42
   },
   "calibration_filter": {
@@ -35,7 +49,7 @@
     ],
     "zscore_threshold": 3.5,
     "downsample_max_side": 256,
-    "min_keep": 3
+    "min_keep": 6
   },
   "constraints": {
     "gain_min": 0.85,
@@ -43,13 +57,13 @@
     "per_channel": {
       "I": {
         "gain_min": 0.9,
-        "gain_max": 1.2
+        "gain_max": 1.25
       }
     }
   },
   "ir_tuning": {
-    "gain_scale": 1.0,
-    "offset_shift": 0.0
+    "gain_scale": 1.03,
+    "offset_shift": 2.0
   },
   "vegetation_tuning": {
     "enabled": true,
@@ -77,8 +91,8 @@
     }
   },
   "output": {
-    "dir": "D:/SCRIPTS/DADOS/AREA_01_saida",
-    "suffix": "_corrigido",
+    "dir": "E:/SP_OUT/HYBRID/GLOBAL_APPLY",
+    "suffix": "_matched",
     "overwrite": false
   }
 }

@@ -1,0 +1,71 @@
+{
+  "global_tiles": 1280,
+  "global_config": "D:\\SCRIPTS\\GOV_SP\\COLOR_MATCH\\hybrid_configs\\pilot\\global_fit_config_pilot.json",
+  "block_configs": 16,
+  "per_block": {
+    "SI_01": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_02": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_03": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_04": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_05": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_06": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_07": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_08": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_09": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_10": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_11": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_12": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_13": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_14": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_15": {
+      "calibration": 120,
+      "apply_test": 10
+    },
+    "SI_16": {
+      "calibration": 120,
+      "apply_test": 10
+    }
+  }
+}

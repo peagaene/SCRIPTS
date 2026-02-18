@@ -2,6 +2,7 @@ import argparse
 import glob
 import json
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
@@ -33,6 +34,12 @@ def _require_gdal():
             "Instale GDAL no ambiente para ler/escrever GeoTIFF com georreferencia."
         )
     return _gdal
+
+
+def _suppress_runtime_warnings() -> None:
+    # Mantem o terminal limpo durante processamentos longos.
+    warnings.filterwarnings("ignore")
+    np.seterr(all="ignore")
 
 
 def _normalize_channel_order(order: str) -> str:
@@ -371,6 +378,73 @@ def _clamp_gain_offset(
     return clamped_gain, float(new_offset)
 
 
+def _resolve_base_params(refinement_cfg: Dict) -> Dict:
+    base_params = refinement_cfg.get("base_params")
+    if isinstance(base_params, dict):
+        return base_params
+
+    base_params_file = refinement_cfg.get("base_params_file")
+    if isinstance(base_params_file, str) and base_params_file.strip():
+        return load_json(Path(base_params_file))
+
+    return {}
+
+
+def _apply_refinement_with_base_params(channels_result: Dict[str, Dict[str, float]], refinement_cfg: Dict) -> None:
+    if not bool(refinement_cfg.get("enabled", False)):
+        return
+
+    base_params = _resolve_base_params(refinement_cfg)
+    base_channels = base_params.get("channels", {}) if isinstance(base_params, dict) else {}
+    if not isinstance(base_channels, dict) or not base_channels:
+        return
+
+    blend = float(refinement_cfg.get("blend", 1.0))
+    blend = float(np.clip(blend, 0.0, 1.0))
+
+    max_delta_gain_default = float(refinement_cfg.get("max_delta_gain", np.inf))
+    max_delta_offset_default = float(refinement_cfg.get("max_delta_offset", np.inf))
+    per_channel = refinement_cfg.get("per_channel", {})
+
+    for channel, ch in channels_result.items():
+        if not ch.get("enabled", False):
+            continue
+        base_ch = base_channels.get(channel)
+        if not isinstance(base_ch, dict) or not base_ch.get("enabled", False):
+            continue
+
+        base_gain = float(base_ch.get("gain", 1.0))
+        base_offset = float(base_ch.get("offset", 0.0))
+        curr_gain = float(ch.get("gain", 1.0))
+        curr_offset = float(ch.get("offset", 0.0))
+
+        ch_cfg = per_channel.get(channel, {}) if isinstance(per_channel, dict) else {}
+        max_delta_gain = float(ch_cfg.get("max_delta_gain", max_delta_gain_default))
+        max_delta_offset = float(ch_cfg.get("max_delta_offset", max_delta_offset_default))
+
+        delta_gain = curr_gain - base_gain
+        delta_offset = curr_offset - base_offset
+
+        if np.isfinite(max_delta_gain):
+            delta_gain = float(np.clip(delta_gain, -max_delta_gain, max_delta_gain))
+        if np.isfinite(max_delta_offset):
+            delta_offset = float(np.clip(delta_offset, -max_delta_offset, max_delta_offset))
+
+        bounded_gain = base_gain + delta_gain
+        bounded_offset = base_offset + delta_offset
+
+        final_gain = base_gain + blend * (bounded_gain - base_gain)
+        final_offset = base_offset + blend * (bounded_offset - base_offset)
+
+        ch["gain_raw"] = curr_gain
+        ch["offset_raw"] = curr_offset
+        ch["base_gain"] = base_gain
+        ch["base_offset"] = base_offset
+        ch["gain"] = float(final_gain)
+        ch["offset"] = float(final_offset)
+        ch["refinement_applied"] = True
+
+
 def fit_transformation(config: Dict) -> Dict:
     source_cfg = config["source"]
     ref_cfg = config["reference"]
@@ -385,6 +459,7 @@ def fit_transformation(config: Dict) -> Dict:
     filter_cfg = config.get("calibration_filter", {})
     constraints_cfg = config.get("constraints", {})
     ir_tuning_cfg = config.get("ir_tuning", {})
+    refinement_cfg = config.get("refinement", {})
 
     source_order = parse_channel_order(source_cfg.get("channel_order", "RGBI"))
     rgb_order = parse_channel_order(ref_cfg.get("rgb_channel_order", "RGB"))
@@ -500,11 +575,18 @@ def fit_transformation(config: Dict) -> Dict:
             "reference_percentile_high": affine["ref_p_high"],
         }
 
+    _apply_refinement_with_base_params(channels_result, refinement_cfg)
+
     return {
         "model": "per_channel_affine_percentile",
         "percentiles": {"low": p_low, "high": p_high},
         "source_channel_order": source_cfg.get("channel_order", "RGBI"),
         "calibration_tiles_used": len(calibration_tiles),
+        "refinement": {
+            "enabled": bool(refinement_cfg.get("enabled", False)),
+            "base_params_file": refinement_cfg.get("base_params_file"),
+            "blend": float(refinement_cfg.get("blend", 1.0)),
+        },
         "channels": channels_result,
     }
 
@@ -779,6 +861,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] = None) -> int:
+    _suppress_runtime_warnings()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -803,3 +886,7 @@ def main(argv: Sequence[str] = None) -> int:
         return 0
 
     return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

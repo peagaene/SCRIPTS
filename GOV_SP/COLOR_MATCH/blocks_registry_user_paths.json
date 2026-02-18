@@ -1,0 +1,238 @@
+﻿[
+    {
+        "block":  "SI_01",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "J:\\SI_01\\OUT",
+                          "exists":  true,
+                          "raster_count":  1175,
+                          "size_gb":  195.001
+                      }
+                  ],
+        "total_raster_count":  1175,
+        "total_size_gb":  195.001
+    },
+    {
+        "block":  "SI_02",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "J:\\SI_02\\OUT",
+                          "exists":  true,
+                          "raster_count":  1703,
+                          "size_gb":  293.828
+                      }
+                  ],
+        "total_raster_count":  1703,
+        "total_size_gb":  293.828
+    },
+    {
+        "block":  "SI_03",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "J:\\SI_03\\OUT",
+                          "exists":  true,
+                          "raster_count":  1907,
+                          "size_gb":  315.677
+                      }
+                  ],
+        "total_raster_count":  1907,
+        "total_size_gb":  315.677
+    },
+    {
+        "block":  "SI_04",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "J:\\SI_04\\OUT",
+                          "exists":  true,
+                          "raster_count":  1334,
+                          "size_gb":  220.825
+                      }
+                  ],
+        "total_raster_count":  1334,
+        "total_size_gb":  220.825
+    },
+    {
+        "block":  "SI_05",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "I:\\SI_05\\OUT",
+                          "exists":  true,
+                          "raster_count":  607,
+                          "size_gb":  100.48
+                      }
+                  ],
+        "total_raster_count":  607,
+        "total_size_gb":  100.48
+    },
+    {
+        "block":  "SI_06",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "J:\\SI_06\\OUT",
+                          "exists":  true,
+                          "raster_count":  1404,
+                          "size_gb":  523.615
+                      }
+                  ],
+        "total_raster_count":  1404,
+        "total_size_gb":  523.615
+    },
+    {
+        "block":  "SI_07",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "\\\\192.168.2.28\\f\\OUT",
+                          "exists":  true,
+                          "raster_count":  1372,
+                          "size_gb":  511.11
+                      }
+                  ],
+        "total_raster_count":  1372,
+        "total_size_gb":  511.11
+    },
+    {
+        "block":  "SI_08",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "J:\\SI_08\\OUT",
+                          "exists":  true,
+                          "raster_count":  1383,
+                          "size_gb":  515.208
+                      }
+                  ],
+        "total_raster_count":  1383,
+        "total_size_gb":  515.208
+    },
+    {
+        "block":  "SI_09",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "\\\\192.168.2.27\\h\\TPHOTO_SI_09\\OUT",
+                          "exists":  true,
+                          "raster_count":  1676,
+                          "size_gb":  624.359
+                      }
+                  ],
+        "total_raster_count":  1676,
+        "total_size_gb":  624.359
+    },
+    {
+        "block":  "SI_10",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "\\\\192.168.2.27\\e\\SI_10\\TPHOTO\\OUT",
+                          "exists":  true,
+                          "raster_count":  1657,
+                          "size_gb":  276.197
+                      }
+                  ],
+        "total_raster_count":  1657,
+        "total_size_gb":  276.197
+    },
+    {
+        "block":  "SI_11",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "I:\\SI_11\\TPHOTO\\OUT",
+                          "exists":  true,
+                          "raster_count":  366,
+                          "size_gb":  136.347
+                      }
+                  ],
+        "total_raster_count":  366,
+        "total_size_gb":  136.347
+    },
+    {
+        "block":  "SI_12",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "H:\\TPHOTO_SI12\\out",
+                          "exists":  true,
+                          "raster_count":  1355,
+                          "size_gb":  504.777
+                      }
+                  ],
+        "total_raster_count":  1355,
+        "total_size_gb":  504.777
+    },
+    {
+        "block":  "SI_13",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "\\\\192.168.2.27\\f\\SI_13\\OUT_SI13",
+                          "exists":  true,
+                          "raster_count":  1461,
+                          "size_gb":  241.848
+                      }
+                  ],
+        "total_raster_count":  1461,
+        "total_size_gb":  241.848
+    },
+    {
+        "block":  "SI_14",
+        "path_count":  3,
+        "paths":  [
+                      {
+                          "path":  "\\\\192.168.2.28\\f\\SI_14\\OUT",
+                          "exists":  true,
+                          "raster_count":  2213,
+                          "size_gb":  366.33
+                      },
+                      {
+                          "path":  "\\\\192.168.2.28\\f\\SI_14\\ILHA_1\\OUT",
+                          "exists":  true,
+                          "raster_count":  59,
+                          "size_gb":  9.767
+                      },
+                      {
+                          "path":  "\\\\192.168.2.28\\f\\SI_14\\ILHA_2\\OUT",
+                          "exists":  true,
+                          "raster_count":  86,
+                          "size_gb":  14.236
+                      }
+                  ],
+        "total_raster_count":  2358,
+        "total_size_gb":  390.333
+    },
+    {
+        "block":  "SI_15",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "\\\\192.168.2.27\\f\\SI_15\\OUT",
+                          "exists":  true,
+                          "raster_count":  2179,
+                          "size_gb":  360.702
+                      }
+                  ],
+        "total_raster_count":  2179,
+        "total_size_gb":  360.702
+    },
+    {
+        "block":  "SI_16",
+        "path_count":  1,
+        "paths":  [
+                      {
+                          "path":  "\\\\192.168.2.27\\i\\TPHOTO_SI_16\\out",
+                          "exists":  true,
+                          "raster_count":  1487,
+                          "size_gb":  246.152
+                      }
+                  ],
+        "total_raster_count":  1487,
+        "total_size_gb":  246.152
+    }
+]

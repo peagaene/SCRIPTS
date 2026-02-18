@@ -1,0 +1,12 @@
+# Execu??o H?brida (Global + Refino por Bloco)
+
+1) Fit global (somente par?metros)
+python GOV_SP/COLOR_MATCH/pipeline.py fit --config GOV_SP/COLOR_MATCH/hybrid_configs/global_fit_config.json --params-out GOV_SP/COLOR_MATCH/hybrid_configs/out/global_params.json
+
+2) Para cada bloco, fit ancorado no global
+python GOV_SP/COLOR_MATCH/pipeline.py fit --config GOV_SP/COLOR_MATCH/hybrid_configs/blocks/si_01_refine_config.json --params-out GOV_SP/COLOR_MATCH/hybrid_configs/out/si_01_params.json
+
+3) Aplicar por bloco
+python GOV_SP/COLOR_MATCH/pipeline.py apply --config GOV_SP/COLOR_MATCH/hybrid_configs/blocks/si_01_refine_config.json --params-in GOV_SP/COLOR_MATCH/hybrid_configs/out/si_01_params.json
+
+Repita 2 e 3 para SI_02..SI_16.
