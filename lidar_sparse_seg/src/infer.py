@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -10,7 +10,7 @@ import yaml
 from tqdm import tqdm
 
 from src.datasets.lidar_dataset import get_input_channels
-from src.models.minkunet import SparseUNet
+from src.models.spconv_unet import SparseUNet
 from src.utils.geom_features import compute_local_geom_features
 from src.utils.io_las import read_las_points, write_las_with_classification
 from src.utils.spconv_utils import build_spconv_tensor
@@ -291,7 +291,9 @@ def infer_file(
                 continue
 
             valid_block_global = idx_block_global[block_valid_mask]
+            valid_pos = np.where(block_valid_mask)[0]
             if valid_block_global.size > max_points_per_block:
+                valid_pos = valid_pos[:max_points_per_block]
                 valid_block_global = valid_block_global[:max_points_per_block]
 
             xyz_valid_block = xyz_all[valid_block_global].copy()
@@ -316,8 +318,6 @@ def infer_file(
             feat_list = [z_rel, intensity_norm]
             if bool(cfg["use_hag"]):
                 hag_all = compute_hag(xyz_block_all, cls_block_all, float(cfg["hag_cell_size"]))
-                valid_set = set(valid_block_global.tolist())
-                valid_pos = np.array([i for i, g in enumerate(idx_block_global.tolist()) if g in valid_set], dtype=np.int64)
                 feat_list.append(hag_all[valid_pos].astype(np.float32))
             if bool(cfg.get("use_return_features", False)):
                 return_ratio, num_returns_norm = normalize_return_features(return_number, number_of_returns)
@@ -453,7 +453,7 @@ def main() -> None:
         depth=int(cfg["model"]["depth"]),
     ).to(device)
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 

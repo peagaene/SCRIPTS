@@ -1,8 +1,10 @@
 ﻿from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
+from collections import OrderedDict
 
 import numpy as np
 from torch.utils.data import Dataset
@@ -36,6 +38,8 @@ class LidarSemanticDataset(Dataset):
         normal_cell_size: float = 1.0,
         normal_min_points: int = 6,
         roughness_scale: float = 1.0,
+        tile_cache_size: int = 4,
+        cache_full_samples: bool = False,
         mode: str = "train",
     ) -> None:
         self.mode = mode
@@ -57,10 +61,14 @@ class LidarSemanticDataset(Dataset):
         self.normal_cell_size = float(normal_cell_size)
         self.normal_min_points = int(normal_min_points)
         self.roughness_scale = float(roughness_scale)
+        self.tile_cache_size = max(int(tile_cache_size), 0)
+        self.cache_full_samples = bool(cache_full_samples)
 
         self.paths = self._load_split(split_file, self.data_root)
         self.las_to_train = self._load_map(las_to_train_map_path)
         self.ignore_set = self._load_ignore(ignore_las_classes_path)
+        self._tile_cache: "OrderedDict[str, dict[str, np.ndarray]]" = OrderedDict()
+        self._sample_cache: dict[int, dict[str, Any]] = {}
 
     @property
     def feature_dim(self) -> int:
@@ -98,6 +106,34 @@ class LidarSemanticDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.paths)
+
+    def _cache_put(self, key: str, value: dict[str, np.ndarray]) -> None:
+        if self.tile_cache_size <= 0:
+            return
+        self._tile_cache[key] = value
+        self._tile_cache.move_to_end(key)
+        while len(self._tile_cache) > self.tile_cache_size:
+            self._tile_cache.popitem(last=False)
+
+    def _get_tile_data(self, path: Path) -> dict[str, np.ndarray]:
+        key = str(path)
+        if key in self._tile_cache:
+            self._tile_cache.move_to_end(key)
+            return self._tile_cache[key]
+
+        pts = read_las_points(path)
+        data = {
+            "xyz": np.stack([pts["x"], pts["y"], pts["z"]], axis=1).astype(np.float64),
+            "intensity": pts["intensity"].astype(np.float32),
+            "classification": pts["classification"].astype(np.int32),
+            "return_number": pts["return_number"].astype(np.float32),
+            "number_of_returns": pts["number_of_returns"].astype(np.float32),
+            "scan_angle": pts["scan_angle"].astype(np.float32),
+        }
+        if self.use_hag and data["xyz"].shape[0] > 0:
+            data["hag"] = self._compute_hag(data["xyz"], data["classification"])
+        self._cache_put(key, data)
+        return data
 
     def _filter_and_map_labels(self, las_cls: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         keep = np.ones_like(las_cls, dtype=bool)
@@ -196,15 +232,17 @@ class LidarSemanticDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         path = self.paths[idx]
-        pts = read_las_points(path)
+        if self.cache_full_samples and self.mode != "train" and idx in self._sample_cache:
+            return self._sample_cache[idx]
 
-        xyz = np.stack([pts["x"], pts["y"], pts["z"]], axis=1).astype(np.float64)
-        intensity = pts["intensity"].astype(np.float32)
-        las_cls = pts["classification"].astype(np.int32)
-        return_number = pts["return_number"].astype(np.float32)
-        number_of_returns = pts["number_of_returns"].astype(np.float32)
-        scan_angle = pts["scan_angle"].astype(np.float32)
-        hag_all = None
+        tile = self._get_tile_data(path)
+        xyz = tile["xyz"].copy()
+        intensity = tile["intensity"].copy()
+        las_cls = tile["classification"].copy()
+        return_number = tile["return_number"].copy()
+        number_of_returns = tile["number_of_returns"].copy()
+        scan_angle = tile["scan_angle"].copy()
+        hag_all = tile.get("hag", None)
 
         if xyz.shape[0] == 0:
             return {
@@ -213,18 +251,21 @@ class LidarSemanticDataset(Dataset):
                 "labels": np.empty((0,), dtype=np.int64),
                 "path": str(path),
             }
-        if self.use_hag:
-            # Keep ground references from the original tile, even if ground points are removed from labels later.
+        if self.use_hag and hag_all is None:
+            # Fallback when tile cache is disabled.
             hag_all = self._compute_hag(xyz.copy(), las_cls.copy())
 
         keep_mask, mapped = self._filter_and_map_labels(las_cls)
         if not np.any(keep_mask):
-            return {
+            sample = {
                 "coords": np.empty((0, 3), dtype=np.int32),
                 "features": np.empty((0, self.feature_dim), dtype=np.float32),
                 "labels": np.empty((0,), dtype=np.int64),
                 "path": str(path),
             }
+            if self.cache_full_samples and self.mode != "train":
+                self._sample_cache[idx] = sample
+            return sample
 
         xyz = xyz[keep_mask]
         intensity = intensity[keep_mask]
@@ -248,12 +289,15 @@ class LidarSemanticDataset(Dataset):
             hag_all = hag_all[crop_mask]
 
         if xyz.shape[0] == 0:
-            return {
+            sample = {
                 "coords": np.empty((0, 3), dtype=np.int32),
                 "features": np.empty((0, self.feature_dim), dtype=np.float32),
                 "labels": np.empty((0,), dtype=np.int64),
                 "path": str(path),
             }
+            if self.cache_full_samples and self.mode != "train":
+                self._sample_cache[idx] = sample
+            return sample
 
         xy_mean = np.mean(xyz[:, :2], axis=0, keepdims=True)
         xyz[:, :2] = xyz[:, :2] - xy_mean
@@ -299,12 +343,15 @@ class LidarSemanticDataset(Dataset):
         features = np.stack(feat_list, axis=1).astype(np.float32)
         vox = voxelize_points(xyz=xyz, features=features, labels=labels, voxel_size=self.voxel_size, num_classes=self.num_classes)
 
-        return {
+        sample = {
             "coords": vox["coords"],
             "features": vox["features"],
             "labels": vox["labels"],
             "path": str(path),
         }
+        if self.cache_full_samples and self.mode != "train":
+            self._sample_cache[idx] = sample
+        return sample
 
 
 def compute_class_histogram(
@@ -313,8 +360,28 @@ def compute_class_histogram(
     las_to_train_map_path: str | Path,
     ignore_las_classes_path: str | Path,
     num_classes: int,
+    cache_path: str | Path | None = None,
 ) -> np.ndarray:
     """Compute class frequencies from LAS labels for weighting loss."""
+    signature_src = (
+        Path(split_file).read_text(encoding="utf-8")
+        + Path(las_to_train_map_path).read_text(encoding="utf-8-sig")
+        + Path(ignore_las_classes_path).read_text(encoding="utf-8-sig")
+        + str(num_classes)
+    )
+    signature = hashlib.md5(signature_src.encode("utf-8")).hexdigest()
+    if cache_path is not None:
+        cpath = Path(cache_path)
+        if cpath.exists():
+            try:
+                payload = json.loads(cpath.read_text(encoding="utf-8"))
+                if payload.get("signature") == signature:
+                    vals = np.asarray(payload.get("hist", []), dtype=np.int64)
+                    if vals.shape[0] == num_classes:
+                        return vals
+            except Exception:
+                pass
+
     lines = Path(split_file).read_text(encoding="utf-8").splitlines()
     las_to_train = json.loads(Path(las_to_train_map_path).read_text(encoding="utf-8-sig"))
     las_to_train = {int(k): int(v) for k, v in las_to_train.items()}
@@ -346,6 +413,13 @@ def compute_class_histogram(
         if mapped.size:
             hist += np.bincount(mapped, minlength=num_classes)
 
+    if cache_path is not None:
+        cpath = Path(cache_path)
+        cpath.parent.mkdir(parents=True, exist_ok=True)
+        cpath.write_text(
+            json.dumps({"signature": signature, "hist": hist.tolist()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     return hist
 
 

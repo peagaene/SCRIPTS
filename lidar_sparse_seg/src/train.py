@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from src.datasets.lidar_dataset import LidarSemanticDataset, compute_class_histogram, get_input_channels
-from src.models.minkunet import SparseUNet
+from src.models.spconv_unet import SparseUNet
 from src.utils.metrics import compute_metrics_from_confusion, confusion_matrix_np, save_epoch_history_csv
 from src.utils.repro import set_seed
 from src.utils.splits import ensure_or_generate_splits
@@ -97,15 +97,22 @@ def save_class_stats(path: Path, class_names: list[str], hist: np.ndarray, weigh
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def evaluate(model, loader, device, num_classes: int, amp: bool) -> tuple[float, dict]:
+def evaluate(
+    model,
+    loader,
+    device,
+    num_classes: int,
+    amp: bool,
+    criterion: torch.nn.Module,
+    max_batches: int = 0,
+) -> tuple[float, dict, int]:
     model.eval()
     cm = np.zeros((num_classes, num_classes), dtype=np.int64)
     val_loss_sum = 0.0
     val_loss_count = 0
-    criterion = torch.nn.CrossEntropyLoss()
 
     with torch.no_grad():
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader, start=1):
             if batch["coords"].shape[0] == 0:
                 continue
 
@@ -123,9 +130,12 @@ def evaluate(model, loader, device, num_classes: int, amp: bool) -> tuple[float,
             val_loss_sum += float(loss.item())
             val_loss_count += 1
 
+            if max_batches > 0 and batch_idx >= max_batches:
+                break
+
     metrics = compute_metrics_from_confusion(cm)
     val_loss = val_loss_sum / max(val_loss_count, 1)
-    return val_loss, metrics
+    return val_loss, metrics, val_loss_count
 
 
 def main() -> None:
@@ -194,6 +204,8 @@ def main() -> None:
         normal_cell_size=float(cfg.get("normal_cell_size", 1.0)),
         normal_min_points=int(cfg.get("normal_min_points", 6)),
         roughness_scale=float(cfg.get("roughness_scale", 1.0)),
+        tile_cache_size=int(cfg.get("tile_cache_size", 4)),
+        cache_full_samples=False,
         mode="train",
     )
 
@@ -219,15 +231,19 @@ def main() -> None:
         normal_cell_size=float(cfg.get("normal_cell_size", 1.0)),
         normal_min_points=int(cfg.get("normal_min_points", 6)),
         roughness_scale=float(cfg.get("roughness_scale", 1.0)),
+        tile_cache_size=int(cfg.get("tile_cache_size", 4)),
+        cache_full_samples=bool(cfg.get("cache_full_samples_val", True)),
         mode="val",
     )
 
+    persistent_workers = int(cfg["num_workers"]) > 0
     train_loader = DataLoader(
         train_ds,
         batch_size=int(cfg["batch_size"]),
         shuffle=True,
         num_workers=int(cfg["num_workers"]),
         pin_memory=device.type == "cuda",
+        persistent_workers=persistent_workers,
         collate_fn=sparse_collate_fn,
     )
     val_loader = DataLoader(
@@ -236,6 +252,7 @@ def main() -> None:
         shuffle=False,
         num_workers=int(cfg["num_workers"]),
         pin_memory=device.type == "cuda",
+        persistent_workers=persistent_workers,
         collate_fn=sparse_collate_fn,
     )
 
@@ -245,6 +262,7 @@ def main() -> None:
         las_to_train_map_path=cfg["paths"]["las_to_train"],
         ignore_las_classes_path=cfg["paths"]["ignore_las_classes"],
         num_classes=num_classes,
+        cache_path=run_dir / "class_hist_cache.json",
     )
     class_weights = compute_class_weights(hist)
     save_class_stats(run_dir / "class_stats.csv", class_names, hist, class_weights)
@@ -273,6 +291,10 @@ def main() -> None:
     optimizer = AdamW(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
 
     total_epochs = int(cfg["epochs"])
+    early_stopping_patience = int(cfg.get("early_stopping_patience", 0))
+    early_stopping_min_delta = float(cfg.get("early_stopping_min_delta", 0.0))
+    checkpoint_every_n_epochs = int(cfg.get("checkpoint_every_n_epochs", 0))
+    fixed_val_batches = int(cfg.get("fixed_val_batches", 0))
     if str(cfg["scheduler"]).lower() == "onecycle":
         scheduler = OneCycleLR(
             optimizer,
@@ -299,6 +321,7 @@ def main() -> None:
 
     best_miou = -1.0
     start_epoch = 0
+    no_improve_epochs = 0
 
     if args.resume_checkpoint:
         resume_path = Path(args.resume_checkpoint)
@@ -306,7 +329,7 @@ def main() -> None:
             raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
 
         print(f"Resuming training from checkpoint: {resume_path}")
-        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        ckpt = torch.load(resume_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state"])
 
         if args.resume_weights_only:
@@ -324,6 +347,12 @@ def main() -> None:
             best_miou = float(ckpt.get("best_miou", -1.0))
             start_epoch = int(ckpt.get("epoch", 0))
             print(f"Resume mode: full-state. start_epoch={start_epoch + 1}, best_mIoU={best_miou:.5f}")
+
+    best_ckpt = checkpoints_dir / "best_mIoU.pth"
+    if args.resume_checkpoint and not args.resume_weights_only and not best_ckpt.exists():
+        resume_path = Path(args.resume_checkpoint)
+        if resume_path.exists():
+            best_ckpt.write_bytes(resume_path.read_bytes())
 
     for epoch in range(start_epoch, total_epochs):
         epoch_start = perf_counter()
@@ -362,7 +391,15 @@ def main() -> None:
             scheduler.step()
 
         train_loss = train_loss_sum / max(train_steps, 1)
-        val_loss, val_metrics = evaluate(model, val_loader, device, num_classes, amp_enabled)
+        val_loss, val_metrics, val_batches = evaluate(
+            model=model,
+            loader=val_loader,
+            device=device,
+            num_classes=num_classes,
+            amp=amp_enabled,
+            criterion=criterion,
+            max_batches=fixed_val_batches,
+        )
         epoch_time = perf_counter() - epoch_start
 
         epoch_row = {
@@ -383,6 +420,7 @@ def main() -> None:
         writer.add_scalar("loss/val", val_loss, epoch + 1)
         writer.add_scalar("metrics/overall_acc", val_metrics["overall_accuracy"], epoch + 1)
         writer.add_scalar("metrics/mIoU", val_metrics["mIoU"], epoch + 1)
+        writer.add_scalar("benchmark/val_batches", val_batches, epoch + 1)
         for cidx, cname in enumerate(class_names):
             writer.add_scalar(f"iou/{cname}", val_metrics["iou_per_class"][cidx], epoch + 1)
 
@@ -400,9 +438,9 @@ def main() -> None:
             last_ckpt,
         )
 
-        if val_metrics["mIoU"] > best_miou:
+        miou_improved = val_metrics["mIoU"] > (best_miou + early_stopping_min_delta)
+        if miou_improved:
             best_miou = val_metrics["mIoU"]
-            best_ckpt = checkpoints_dir / "best_mIoU.pth"
             torch.save(
                 {
                     "epoch": epoch + 1,
@@ -415,6 +453,24 @@ def main() -> None:
                 },
                 best_ckpt,
             )
+            no_improve_epochs = 0
+        else:
+            no_improve_epochs += 1
+
+        if checkpoint_every_n_epochs > 0 and ((epoch + 1) % checkpoint_every_n_epochs == 0):
+            periodic_ckpt = checkpoints_dir / f"epoch_{epoch + 1:03d}.pth"
+            torch.save(
+                {
+                    "epoch": epoch + 1,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                    "scaler_state": scaler.state_dict(),
+                    "best_miou": best_miou,
+                    "config": cfg,
+                },
+                periodic_ckpt,
+            )
 
         save_epoch_history_csv(logs_dir / "history.csv", history)
 
@@ -422,11 +478,22 @@ def main() -> None:
             f"[epoch {epoch + 1:03d}/{total_epochs:03d}] "
             f"train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
             f"acc={val_metrics['overall_accuracy']:.5f} mIoU={val_metrics['mIoU']:.5f} "
-            f"lr={optimizer.param_groups[0]['lr']:.7f} time={epoch_time:.1f}s"
+            f"lr={optimizer.param_groups[0]['lr']:.7f} time={epoch_time:.1f}s "
+            f"val_batches={val_batches}"
         )
         for cidx, cname in enumerate(class_names):
             print(f"    IoU[{cidx}:{cname}]={val_metrics['iou_per_class'][cidx]:.5f}")
-        print(f"    best_mIoU={best_miou:.5f} | last={last_ckpt} | best={checkpoints_dir / 'best_mIoU.pth'}")
+        print(
+            f"    best_mIoU={best_miou:.5f} | no_improve_epochs={no_improve_epochs} "
+            f"| last={last_ckpt} | best={best_ckpt}"
+        )
+
+        if early_stopping_patience > 0 and no_improve_epochs >= early_stopping_patience:
+            print(
+                "Early stopping triggered: "
+                f"patience={early_stopping_patience}, min_delta={early_stopping_min_delta}"
+            )
+            break
 
     writer.close()
     print("Training finished.")

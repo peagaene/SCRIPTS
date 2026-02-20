@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.datasets.lidar_dataset import LidarSemanticDataset, get_input_channels
-from src.models.minkunet import SparseUNet
+from src.models.spconv_unet import SparseUNet
 from src.utils.metrics import (
     compute_metrics_from_confusion,
     confusion_matrix_np,
@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--split", type=str, choices=["val", "test"], default="val")
     parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--max_batches", type=int, default=None, help="Evaluate only first N batches (benchmark mode)")
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     return parser.parse_args()
@@ -47,6 +48,7 @@ def main() -> None:
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     if args.batch_size is not None:
         cfg["batch_size"] = args.batch_size
+    max_batches = int(args.max_batches) if args.max_batches is not None else int(cfg.get("validate_max_batches", 0))
     split_info = ensure_or_generate_splits(cfg)
     if split_info["generated"]:
         print(
@@ -93,15 +95,19 @@ def main() -> None:
         normal_cell_size=float(cfg.get("normal_cell_size", 1.0)),
         normal_min_points=int(cfg.get("normal_min_points", 6)),
         roughness_scale=float(cfg.get("roughness_scale", 1.0)),
+        tile_cache_size=int(cfg.get("tile_cache_size", 4)),
+        cache_full_samples=bool(cfg.get("cache_full_samples_val", True)),
         mode=args.split,
     )
 
+    persistent_workers = int(cfg["num_workers"]) > 0
     loader = DataLoader(
         ds,
         batch_size=int(cfg["batch_size"]),
         shuffle=False,
         num_workers=int(cfg["num_workers"]),
         pin_memory=device.type == "cuda",
+        persistent_workers=persistent_workers,
         collate_fn=sparse_collate_fn,
     )
 
@@ -122,7 +128,7 @@ def main() -> None:
         depth=int(cfg["model"]["depth"]),
     ).to(device)
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
@@ -140,9 +146,10 @@ def main() -> None:
 
     cm = np.zeros((num_classes, num_classes), dtype=np.int64)
     amp_enabled = bool(cfg["amp"]) and device.type == "cuda"
+    evaluated_batches = 0
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc=f"validating({args.split})", ncols=110):
+        for batch_idx, batch in enumerate(tqdm(loader, desc=f"validating({args.split})", ncols=110), start=1):
             if batch["coords"].shape[0] == 0:
                 continue
 
@@ -156,6 +163,9 @@ def main() -> None:
 
             pred = torch.argmax(logits, dim=1)
             cm += confusion_matrix_np(pred.cpu().numpy(), labels.cpu().numpy(), num_classes)
+            evaluated_batches += 1
+            if max_batches > 0 and batch_idx >= max_batches:
+                break
 
     metrics = compute_metrics_from_confusion(cm)
 
@@ -163,6 +173,7 @@ def main() -> None:
     class_names = [class_map[str(i)] for i in range(num_classes)]
     metrics["class_names"] = class_names
     metrics["confusion_matrix"] = cm.tolist()
+    metrics["evaluated_batches"] = int(evaluated_batches)
     edif_idx = _find_class_idx(class_names, "edific")
     veg_idx = _find_class_idx(class_names, "veget")
     if edif_idx is not None and veg_idx is not None:
@@ -184,6 +195,7 @@ def main() -> None:
 
     summary_csv = output_dir / f"summary_{args.split}.csv"
     lines = ["metric,value", f"overall_accuracy,{metrics['overall_accuracy']}", f"mIoU,{metrics['mIoU']}"]
+    lines.append(f"evaluated_batches,{metrics['evaluated_batches']}")
     for i, iou in enumerate(metrics["iou_per_class"]):
         lines.append(f"IoU_{class_names[i]},{iou}")
     for i, f1 in enumerate(metrics["f1_per_class"]):
@@ -200,6 +212,7 @@ def main() -> None:
 
     print(f"overall_accuracy={metrics['overall_accuracy']:.6f}")
     print(f"mIoU={metrics['mIoU']:.6f}")
+    print(f"evaluated_batches={metrics['evaluated_batches']}")
     for i, name in enumerate(class_names):
         print(
             f"IoU[{i}:{name}]={metrics['iou_per_class'][i]:.6f} "

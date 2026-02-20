@@ -17,12 +17,19 @@ roughness_scale: 1.0
 crop_size: 96.0
 max_points_per_crop: 250000
 num_workers: 4
+tile_cache_size: 4
+cache_full_samples_val: true
 batch_size: 1
 epochs: 20
 lr: 0.001
 weight_decay: 0.01
 scheduler: cosine
 amp: true
+fixed_val_batches: 0
+validate_max_batches: 0
+early_stopping_patience: 0
+early_stopping_min_delta: 0.0
+checkpoint_every_n_epochs: 0
 split:
   auto_generate: true
   mode: balance_target_class
@@ -36,7 +43,6 @@ split:
   seed: 42
   regenerate: true
 model:
-  in_channels: 2
   base_channels: 32
   depth: 4
 postprocess:
@@ -54,7 +60,7 @@ postprocess:
   unresolved_train_fallback_class: 2
   unresolved_output_las_class: 1
 paths:
-  data_root: \\192.168.2.26\d\5 Processamento Laser\1 TSCAN\LOTE_09
+  data_root: \\192.168.2.26\d\5 Processamento Laser\1 TSCAN\LOTE_09\BLOCO_K
   train_split: E:/training/train_split/train.txt
   val_split: E:/training/val_split/val.txt
   test_split: E:/training/test_split/test.txt
