@@ -112,6 +112,12 @@ Paths:
 - `paths.train_split`, `paths.val_split`, `paths.test_split`
 - `paths.checkpoints_dir`, `paths.logs_dir`
 
+Model selection:
+
+- `model.name: spconv_unet` (current baseline)
+- `model.name: spconv_unet_multiscale` (encoder-decoder with downsample/upsample + skip connections)
+- `model.base_channels`, `model.depth` are used by both variants
+
 ## 6. Train
 
 ```powershell
@@ -128,6 +134,15 @@ Warm-start weights only:
 
 ```powershell
 python -m src.train --config configs/default.yaml --resume_checkpoint E:/training/checkpoints/main/best_mIoU.pth --resume_weights_only
+```
+
+Switch to multiscale model (A/B test):
+
+```yaml
+model:
+  name: spconv_unet_multiscale
+  base_channels: 32
+  depth: 2
 ```
 
 Training outputs:

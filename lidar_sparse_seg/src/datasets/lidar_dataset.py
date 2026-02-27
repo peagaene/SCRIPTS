@@ -130,8 +130,6 @@ class LidarSemanticDataset(Dataset):
             "number_of_returns": pts["number_of_returns"].astype(np.float32),
             "scan_angle": pts["scan_angle"].astype(np.float32),
         }
-        if self.use_hag and data["xyz"].shape[0] > 0:
-            data["hag"] = self._compute_hag(data["xyz"], data["classification"])
         self._cache_put(key, data)
         return data
 
@@ -242,8 +240,6 @@ class LidarSemanticDataset(Dataset):
         return_number = tile["return_number"].copy()
         number_of_returns = tile["number_of_returns"].copy()
         scan_angle = tile["scan_angle"].copy()
-        hag_all = tile.get("hag", None)
-
         if xyz.shape[0] == 0:
             return {
                 "coords": np.empty((0, 3), dtype=np.int32),
@@ -251,12 +247,12 @@ class LidarSemanticDataset(Dataset):
                 "labels": np.empty((0,), dtype=np.int64),
                 "path": str(path),
             }
-        if self.use_hag and hag_all is None:
-            # Fallback when tile cache is disabled.
-            hag_all = self._compute_hag(xyz.copy(), las_cls.copy())
 
-        keep_mask, mapped = self._filter_and_map_labels(las_cls)
-        if not np.any(keep_mask):
+        # Keep a non-ignored crop for geometry/HAG references.
+        non_ignored = np.ones_like(las_cls, dtype=bool)
+        for c in self.ignore_set:
+            non_ignored &= las_cls != c
+        if not np.any(non_ignored):
             sample = {
                 "coords": np.empty((0, 3), dtype=np.int32),
                 "features": np.empty((0, self.feature_dim), dtype=np.float32),
@@ -267,27 +263,46 @@ class LidarSemanticDataset(Dataset):
                 self._sample_cache[idx] = sample
             return sample
 
-        xyz = xyz[keep_mask]
-        intensity = intensity[keep_mask]
-        labels = mapped[keep_mask]
-        las_cls = las_cls[keep_mask]
-        return_number = return_number[keep_mask]
-        number_of_returns = number_of_returns[keep_mask]
-        scan_angle = scan_angle[keep_mask]
-        if hag_all is not None:
-            hag_all = hag_all[keep_mask]
+        mapped_all = np.full_like(las_cls, fill_value=-1, dtype=np.int64)
+        for las_c, train_c in self.las_to_train.items():
+            mapped_all[las_cls == las_c] = train_c
 
-        crop_mask = self._crop_points(xyz)
-        xyz = xyz[crop_mask]
-        intensity = intensity[crop_mask]
-        labels = labels[crop_mask]
-        las_cls = las_cls[crop_mask]
-        return_number = return_number[crop_mask]
-        number_of_returns = number_of_returns[crop_mask]
-        scan_angle = scan_angle[crop_mask]
-        if hag_all is not None:
-            hag_all = hag_all[crop_mask]
+        xyz_ng = xyz[non_ignored]
+        intensity_ng = intensity[non_ignored]
+        las_cls_ng = las_cls[non_ignored]
+        mapped_ng = mapped_all[non_ignored]
+        return_number_ng = return_number[non_ignored]
+        number_of_returns_ng = number_of_returns[non_ignored]
+        scan_angle_ng = scan_angle[non_ignored]
 
+        crop_mask_ng = self._crop_points(xyz_ng)
+        xyz_ng = xyz_ng[crop_mask_ng]
+        intensity_ng = intensity_ng[crop_mask_ng]
+        las_cls_ng = las_cls_ng[crop_mask_ng]
+        mapped_ng = mapped_ng[crop_mask_ng]
+        return_number_ng = return_number_ng[crop_mask_ng]
+        number_of_returns_ng = number_of_returns_ng[crop_mask_ng]
+        scan_angle_ng = scan_angle_ng[crop_mask_ng]
+
+        keep_train = mapped_ng >= 0
+        if not np.any(keep_train):
+            sample = {
+                "coords": np.empty((0, 3), dtype=np.int32),
+                "features": np.empty((0, self.feature_dim), dtype=np.float32),
+                "labels": np.empty((0,), dtype=np.int64),
+                "path": str(path),
+            }
+            if self.cache_full_samples and self.mode != "train":
+                self._sample_cache[idx] = sample
+            return sample
+
+        xyz = xyz_ng[keep_train]
+        intensity = intensity_ng[keep_train]
+        labels = mapped_ng[keep_train]
+        las_cls = las_cls_ng[keep_train]
+        return_number = return_number_ng[keep_train]
+        number_of_returns = number_of_returns_ng[keep_train]
+        scan_angle = scan_angle_ng[keep_train]
         if xyz.shape[0] == 0:
             sample = {
                 "coords": np.empty((0, 3), dtype=np.int32),
@@ -308,8 +323,10 @@ class LidarSemanticDataset(Dataset):
 
         feat_list = [z_rel, intensity_norm]
         if self.use_hag:
-            # Use precomputed HAG from original tile references.
-            feat_list.append(hag_all.astype(np.float32))
+            # HAG reference uses the full non-ignored crop (can include fixed ground),
+            # then we select trainable points only.
+            hag_ng = self._compute_hag(xyz_ng, las_cls_ng)
+            feat_list.append(hag_ng[keep_train].astype(np.float32))
         if self.use_return_features:
             return_ratio, num_returns_norm = self._normalize_return_features(return_number, number_of_returns)
             feat_list.append(return_ratio)

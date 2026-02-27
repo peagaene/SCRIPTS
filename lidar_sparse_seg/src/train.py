@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from src.datasets.lidar_dataset import LidarSemanticDataset, compute_class_histogram, get_input_channels
-from src.models.spconv_unet import SparseUNet
+from src.models.factory import build_model
 from src.utils.metrics import compute_metrics_from_confusion, confusion_matrix_np, save_epoch_history_csv
 from src.utils.repro import set_seed
 from src.utils.splits import ensure_or_generate_splits
@@ -280,12 +280,7 @@ def main() -> None:
         use_planarity_feature=use_planarity_feature,
         use_linearity_feature=use_linearity_feature,
     )
-    model = SparseUNet(
-        in_channels=in_channels,
-        num_classes=num_classes,
-        base_channels=int(cfg["model"]["base_channels"]),
-        depth=int(cfg["model"]["depth"]),
-    ).to(device)
+    model = build_model(cfg=cfg, in_channels=in_channels, num_classes=num_classes).to(device)
 
     criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor(class_weights, device=device))
     optimizer = AdamW(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))

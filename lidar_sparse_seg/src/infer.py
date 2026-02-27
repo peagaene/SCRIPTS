@@ -6,11 +6,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 import yaml
 from tqdm import tqdm
 
 from src.datasets.lidar_dataset import get_input_channels
-from src.models.spconv_unet import SparseUNet
+from src.models.factory import build_model
 from src.utils.geom_features import compute_local_geom_features
 from src.utils.io_las import read_las_points, write_las_with_classification
 from src.utils.spconv_utils import build_spconv_tensor
@@ -29,14 +30,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--block_size", type=float, default=128.0, help="XY block size in meters")
     parser.add_argument("--max_points_per_block", type=int, default=400000)
+    parser.add_argument(
+        "--fixed_ground_mode",
+        action="store_true",
+        help="Keep ground LAS class fixed (not inferred), classify only non-ground points",
+    )
+    parser.add_argument(
+        "--fixed_ground_las_class",
+        type=int,
+        default=None,
+        help="LAS class id treated as fixed ground when fixed_ground_mode is enabled",
+    )
+    parser.add_argument(
+        "--infer_all_non_ignored",
+        action="store_true",
+        help="Infer all non-ignored points, regardless of original LAS class mapping",
+    )
     parser.add_argument("--postprocess", action="store_true", help="Enable post-processing")
     parser.add_argument("--pp_smooth_voxel_size", type=float, default=None)
     parser.add_argument("--pp_min_building_hag", type=float, default=None)
     parser.add_argument("--pp_building_class", type=int, default=None, help="Internal class id for building")
-    parser.add_argument("--pp_fallback_class", type=int, default=None, help="Internal class id when low-HAG building")
     parser.add_argument("--pp_max_ground_hag", type=float, default=None)
     parser.add_argument("--pp_ground_class", type=int, default=None, help="Internal class id for ground")
     parser.add_argument("--pp_ground_fallback_class", type=int, default=None)
+    parser.add_argument("--pp_min_vegetation_hag", type=float, default=None)
+    parser.add_argument("--pp_vegetation_class", type=int, default=None, help="Internal class id for vegetation")
+    parser.add_argument(
+        "--pp_fill_unresolved_neighbors",
+        action="store_true",
+        help="Fill unresolved points using nearest resolved neighbors in XY",
+    )
+    parser.add_argument("--pp_fill_grid_size", type=float, default=None, help="XY grid size for unresolved fill")
+    parser.add_argument("--output_binary_01", action="store_true", help="Force output classes to binary LAS 0/1")
+    parser.add_argument(
+        "--binary_positive_classes",
+        type=str,
+        default=None,
+        help="Comma-separated internal class ids mapped to LAS=1 in binary mode (others -> LAS=0)",
+    )
     return parser.parse_args()
 
 
@@ -175,9 +206,8 @@ def apply_postprocess(
     ground_class: int,
     ground_fallback_class: int,
     building_fallback_class: int,
+    min_vegetation_hag: float,
     vegetation_class: int,
-    vegetation_fallback_class: int,
-    fallback_class: int,
 ) -> np.ndarray:
     out = pred_train.copy()
     xyz_valid = xyz_all[valid_idx]
@@ -213,11 +243,67 @@ def apply_postprocess(
             high_hag_ground = (out == ground_class) & (hag_valid > max_ground_hag)
             out[high_hag_ground] = ground_fallback_class
 
+    if hag_valid is not None and min_vegetation_hag >= 0:
+        if 0 <= vegetation_class < num_classes and 0 <= ground_class < num_classes:
+            low_hag_vegetation = (out == vegetation_class) & (hag_valid < min_vegetation_hag)
+            out[low_hag_vegetation] = ground_class
+
+    return out
+
+
+def fill_unresolved_by_grid_nn(
+    pred_train: np.ndarray,
+    xyz_valid: np.ndarray,
+    grid_size: float = 1.0,
+) -> np.ndarray:
+    if pred_train.size == 0:
+        return pred_train
+    unresolved = pred_train < 0
+    if not np.any(unresolved):
+        return pred_train
+
+    resolved = ~unresolved
+    if not np.any(resolved):
+        return pred_train
+
+    gs = max(float(grid_size), 0.25)
+    xy = xyz_valid[:, :2]
+    x0 = float(np.min(xy[:, 0]))
+    y0 = float(np.min(xy[:, 1]))
+
+    gx = np.floor((xy[:, 0] - x0) / gs).astype(np.int64)
+    gy = np.floor((xy[:, 1] - y0) / gs).astype(np.int64)
+
+    resolved_lookup: dict[tuple[int, int], int] = {}
+    for idx in np.where(resolved)[0]:
+        resolved_lookup[(int(gx[idx]), int(gy[idx]))] = int(pred_train[idx])
+
+    out = pred_train.copy()
+    unresolved_idx = np.where(unresolved)[0]
+    for idx in unresolved_idx:
+        cx = int(gx[idx])
+        cy = int(gy[idx])
+        found = None
+        # Increasing square radius search in grid space.
+        for radius in range(0, 8):
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    key = (cx + dx, cy + dy)
+                    if key in resolved_lookup:
+                        found = resolved_lookup[key]
+                        break
+                if found is not None:
+                    break
+            if found is not None:
+                break
+        if found is not None:
+            out[idx] = found
+
     return out
 
 
 def infer_file(
-    model: SparseUNet,
+    model: nn.Module,
     path_in: Path,
     path_out: Path,
     cfg: dict,
@@ -232,11 +318,17 @@ def infer_file(
     pp_ground_class: int,
     pp_ground_fallback_class: int,
     pp_building_fallback_class: int,
+    pp_min_vegetation_hag: float,
     pp_vegetation_class: int,
-    pp_vegetation_fallback_class: int,
+    pp_fill_unresolved_neighbors: bool,
+    pp_fill_grid_size: float,
     pp_unresolved_train_fallback_class: int,
     pp_unresolved_output_las_class: int,
-    pp_fallback_class: int,
+    infer_all_non_ignored: bool,
+    fixed_ground_mode: bool,
+    fixed_ground_las_class: int,
+    output_binary_01: bool,
+    binary_positive_classes: set[int],
 ) -> None:
     pts = read_las_points(path_in)
     n_total = pts["classification"].shape[0]
@@ -257,13 +349,18 @@ def infer_file(
         for k, v in json.loads(Path(cfg["paths"]["las_to_train"]).read_text(encoding="utf-8-sig")).items()
     }
 
-    valid = np.ones((n_total,), dtype=bool)
-    for c in ignore_set:
-        valid &= cls_all != c
-    valid &= np.isin(cls_all, list(las_to_train.keys()))
     non_ignored = np.ones((n_total,), dtype=bool)
     for c in ignore_set:
         non_ignored &= cls_all != c
+    if fixed_ground_mode:
+        valid_base = non_ignored & (cls_all != fixed_ground_las_class)
+    else:
+        valid_base = non_ignored
+
+    if infer_all_non_ignored or fixed_ground_mode:
+        valid = valid_base.copy()
+    else:
+        valid = valid_base & np.isin(cls_all, list(las_to_train.keys()))
 
     pred_cls_las = cls_all.copy().astype(np.uint8)
     if not np.any(valid):
@@ -381,6 +478,13 @@ def infer_file(
 
     train_to_las = build_train_to_las_map(las_to_train, int(cfg["num_classes"]))
 
+    if pp_fill_unresolved_neighbors:
+        train_pred = fill_unresolved_by_grid_nn(
+            pred_train=train_pred,
+            xyz_valid=xyz_all[valid_idx],
+            grid_size=pp_fill_grid_size,
+        )
+
     unresolved = train_pred < 0
     if np.any(unresolved):
         unresolved_fill = pp_unresolved_train_fallback_class
@@ -405,12 +509,14 @@ def infer_file(
             ground_class=pp_ground_class,
             ground_fallback_class=pp_ground_fallback_class,
             building_fallback_class=pp_building_fallback_class,
+            min_vegetation_hag=pp_min_vegetation_hag,
             vegetation_class=pp_vegetation_class,
-            vegetation_fallback_class=pp_vegetation_fallback_class,
-            fallback_class=pp_fallback_class,
         )
 
-    pred_las_valid = np.array([train_to_las[int(v)] for v in train_pred], dtype=np.uint8)
+    if output_binary_01:
+        pred_las_valid = np.array([1 if int(v) in binary_positive_classes else 0 for v in train_pred], dtype=np.uint8)
+    else:
+        pred_las_valid = np.array([train_to_las[int(v)] for v in train_pred], dtype=np.uint8)
     if np.any(unresolved):
         pred_las_valid[unresolved] = np.uint8(pp_unresolved_output_las_class)
     pred_cls_las[valid_idx] = pred_las_valid
@@ -446,12 +552,7 @@ def main() -> None:
         use_linearity_feature=bool(cfg.get("use_linearity_feature", False)),
     )
 
-    model = SparseUNet(
-        in_channels=in_channels,
-        num_classes=int(cfg["num_classes"]),
-        base_channels=int(cfg["model"]["base_channels"]),
-        depth=int(cfg["model"]["depth"]),
-    ).to(device)
+    model = build_model(cfg=cfg, in_channels=in_channels, num_classes=int(cfg["num_classes"])).to(device)
 
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(ckpt["model_state"])
@@ -490,15 +591,47 @@ def main() -> None:
         else pp_cfg.get("ground_fallback_class", 2)
     )
     pp_building_fallback_class = int(pp_cfg.get("building_fallback_class", 2))
-    pp_vegetation_class = int(pp_cfg.get("vegetation_class", 2))
-    pp_vegetation_fallback_class = int(pp_cfg.get("vegetation_fallback_class", 1))
+    pp_min_vegetation_hag = float(
+        args.pp_min_vegetation_hag
+        if args.pp_min_vegetation_hag is not None
+        else pp_cfg.get("min_vegetation_hag", -1.0)
+    )
+    pp_vegetation_class = int(
+        args.pp_vegetation_class
+        if args.pp_vegetation_class is not None
+        else pp_cfg.get("vegetation_class", 2)
+    )
+    pp_fill_unresolved_neighbors = bool(args.pp_fill_unresolved_neighbors) or bool(
+        pp_cfg.get("fill_unresolved_neighbors", True)
+    )
+    pp_fill_grid_size = float(
+        args.pp_fill_grid_size
+        if args.pp_fill_grid_size is not None
+        else pp_cfg.get("fill_grid_size", 1.0)
+    )
+    infer_all_non_ignored = bool(args.infer_all_non_ignored) or bool(cfg.get("infer_all_non_ignored", False))
+    fixed_ground_mode = bool(args.fixed_ground_mode) or bool(cfg.get("fixed_ground_mode", False))
+    fixed_ground_las_class = int(
+        args.fixed_ground_las_class
+        if args.fixed_ground_las_class is not None
+        else cfg.get("fixed_ground_las_class", 2)
+    )
+    output_binary_01 = bool(args.output_binary_01) or bool(cfg.get("output_binary_01", False))
+    binary_positive_cfg = (
+        args.binary_positive_classes
+        if args.binary_positive_classes is not None
+        else cfg.get("binary_positive_classes", [1])
+    )
+    if isinstance(binary_positive_cfg, str):
+        binary_positive_classes = {
+            int(part.strip()) for part in binary_positive_cfg.split(",") if part.strip()
+        }
+    else:
+        binary_positive_classes = {int(v) for v in binary_positive_cfg}
+    if not binary_positive_classes:
+        binary_positive_classes = {1}
     pp_unresolved_train_fallback_class = int(pp_cfg.get("unresolved_train_fallback_class", 2))
     pp_unresolved_output_las_class = int(pp_cfg.get("unresolved_output_las_class", 1))
-    pp_fallback_class = int(
-        args.pp_fallback_class
-        if args.pp_fallback_class is not None
-        else pp_cfg.get("fallback_class", 0)
-    )
     input_path = Path(args.input)
     output_path = Path(args.output)
 
@@ -529,11 +662,17 @@ def main() -> None:
             pp_ground_class=pp_ground_class,
             pp_ground_fallback_class=pp_ground_fallback_class,
             pp_building_fallback_class=pp_building_fallback_class,
+            pp_min_vegetation_hag=pp_min_vegetation_hag,
             pp_vegetation_class=pp_vegetation_class,
-            pp_vegetation_fallback_class=pp_vegetation_fallback_class,
+            pp_fill_unresolved_neighbors=pp_fill_unresolved_neighbors,
+            pp_fill_grid_size=pp_fill_grid_size,
             pp_unresolved_train_fallback_class=pp_unresolved_train_fallback_class,
             pp_unresolved_output_las_class=pp_unresolved_output_las_class,
-            pp_fallback_class=pp_fallback_class,
+            infer_all_non_ignored=infer_all_non_ignored,
+            fixed_ground_mode=fixed_ground_mode,
+            fixed_ground_las_class=fixed_ground_las_class,
+            output_binary_01=output_binary_01,
+            binary_positive_classes=binary_positive_classes,
         )
 
 
